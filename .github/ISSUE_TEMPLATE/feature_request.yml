@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest an improvement to webpty
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Do not disclose credentials, capability links, terminal contents, or vulnerabilities. Report vulnerabilities privately through the repository's Security page.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem or limitation should this change address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you would like and who would benefit.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe workarounds or other approaches you considered.
+    validations:
+      required: false
+  - type: textarea
+    id: impact
+    attributes:
+      label: Security and privacy impact
+      description: Explain any effect on terminal access, sharing, recordings, credentials, or stored data.
+    validations:
+      required: true
+  - type: checkboxes
+    id: sensitive-data
+    attributes:
+      label: Sensitive data check
+      options:
+        - label: I have not included credentials, capability links, terminal contents, or vulnerability details.
+          required: true

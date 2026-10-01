@@ -1,0 +1,85 @@
+name: Bug report
+description: Report a reproducible defect in webpty
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a defect. Do not disclose credentials, capability links, terminal contents, or vulnerabilities. Report vulnerabilities privately through the repository's Security page.
+  - type: input
+    id: version
+    attributes:
+      label: webpty version
+      description: Run `webpty version` and provide its output.
+      placeholder: v1.2.3
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation method
+      options:
+        - Install script
+        - Homebrew
+        - Binary archive
+        - Docker
+        - Built from source
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host OS and architecture
+      description: Include the operating system version and architecture.
+      placeholder: macOS 27 arm64
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser
+      description: Include the browser name and version.
+      placeholder: Firefox 143
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest reliable sequence that demonstrates the defect.
+      placeholder: |
+        1. Start webpty with ...
+        2. Open ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs
+      description: Paste relevant logs after removing credentials, capability links, terminal contents, personal data, and other secrets.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: sensitive-data
+    attributes:
+      label: Sensitive data check
+      options:
+        - label: I have not included credentials, capability links, terminal contents, or vulnerability details.
+          required: true
