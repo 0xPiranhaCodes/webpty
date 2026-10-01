@@ -48,7 +48,12 @@ func TestPublicDocumentationLayout(t *testing.T) {
 	}
 }
 
-var markdownLink = regexp.MustCompile(`!?\[[^]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)`)
+var (
+	markdownLink                = regexp.MustCompile(`!?\[[^]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)`)
+	markdownReferenceDefinition = regexp.MustCompile(
+		`(?m)^[ \t]{0,3}\[[^]\r\n]+\]:[ \t]*(?:<([^>\r\n]+)>|([^ \t\r\n]+))`,
+	)
+)
 
 func TestTrackedMarkdownLinksResolve(t *testing.T) {
 	root := repoRoot(t)
@@ -56,26 +61,66 @@ func TestTrackedMarkdownLinksResolve(t *testing.T) {
 		if !strings.HasSuffix(name, ".md") {
 			continue
 		}
-		for _, match := range markdownLink.FindAllStringSubmatch(readRepoFile(t, name), -1) {
-			target := match[1]
-			if strings.HasPrefix(target, "#") || strings.HasPrefix(target, "mailto:") ||
-				strings.Contains(target, "://") {
-				continue
-			}
-			target, _, _ = strings.Cut(target, "#")
-			target, _, _ = strings.Cut(target, "?")
-			if target == "" {
-				continue
-			}
-			resolved := filepath.Clean(filepath.Join(root, filepath.Dir(name), filepath.FromSlash(target)))
-			relative, err := filepath.Rel(root, resolved)
-			if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-				t.Errorf("%s links outside the repository: %s", name, match[1])
-				continue
-			}
-			if _, err := os.Stat(resolved); err != nil {
-				t.Errorf("%s has broken local link %s: %v", name, match[1], err)
-			}
+		for _, target := range brokenLocalMarkdownLinks(root, name, readRepoFile(t, name)) {
+			t.Errorf("%s has broken local link %s", name, target)
 		}
+	}
+}
+
+func brokenLocalMarkdownLinks(root, name, body string) []string {
+	var targets []string
+	for _, match := range markdownLink.FindAllStringSubmatch(body, -1) {
+		targets = append(targets, match[1])
+	}
+	for _, match := range markdownReferenceDefinition.FindAllStringSubmatch(body, -1) {
+		target := match[1]
+		if target == "" {
+			target = match[2]
+		}
+		targets = append(targets, target)
+	}
+
+	var broken []string
+	for _, original := range targets {
+		target := original
+		if strings.HasPrefix(target, "#") || strings.HasPrefix(target, "mailto:") ||
+			strings.Contains(target, "://") {
+			continue
+		}
+		target, _, _ = strings.Cut(target, "#")
+		target, _, _ = strings.Cut(target, "?")
+		if target == "" {
+			continue
+		}
+		resolved := filepath.Clean(filepath.Join(root, filepath.Dir(name), filepath.FromSlash(target)))
+		relative, err := filepath.Rel(root, resolved)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			broken = append(broken, original)
+			continue
+		}
+		if _, err := os.Stat(resolved); err != nil {
+			broken = append(broken, original)
+		}
+	}
+	return broken
+}
+
+func TestBrokenLocalMarkdownLinksIncludesReferenceDefinitions(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "existing.md"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Join([]string{
+		"[existing]: existing.md",
+		"[missing]: missing.md \"optional title\"",
+		"[external]: https://example.com/docs",
+	}, "\n")
+
+	broken := brokenLocalMarkdownLinks(root, "docs/guide.md", body)
+	if len(broken) != 1 || broken[0] != "missing.md" {
+		t.Fatalf("broken links = %v, want [missing.md]", broken)
 	}
 }
