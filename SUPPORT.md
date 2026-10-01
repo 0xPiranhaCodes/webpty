@@ -2,10 +2,9 @@
 
 ## Usage questions
 
-For installation, configuration, deployment, and other usage questions, use
-[GitHub Discussions](https://github.com/0xPiranhaCodes/webpty/discussions)
-when Discussions are enabled. Before posting, review the README, project
-documentation, and existing discussions.
+For installation, configuration, deployment, and other usage questions, submit
+a [support request](https://github.com/0xPiranhaCodes/webpty/issues/new?template=support_request.yml).
+Before posting, review the README, project documentation, and existing issues.
 
 ## Reproducible defects
 

@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a defect. Do not disclose credentials, capability links, terminal contents, or vulnerabilities. Report vulnerabilities privately through the repository's Security page.
+        Thanks for reporting a defect. Do not disclose credentials, capability links, terminal contents, or vulnerabilities. Vulnerabilities must not be reported publicly; follow [SECURITY.md](https://github.com/0xPiranhaCodes/webpty/blob/main/SECURITY.md).
   - type: input
     id: version
     attributes:

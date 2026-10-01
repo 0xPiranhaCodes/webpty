@@ -1,11 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/0xPiranhaCodes/webpty/security/advisories/new
-    about: Privately report a suspected security vulnerability.
+    url: https://github.com/0xPiranhaCodes/webpty/blob/main/SECURITY.md
+    about: Follow the private email process; never report vulnerabilities publicly.
   - name: Support guidance
     url: https://github.com/0xPiranhaCodes/webpty/blob/main/SUPPORT.md
     about: Choose the appropriate channel for help or a reproducible defect.
-  - name: GitHub Discussions
-    url: https://github.com/0xPiranhaCodes/webpty/discussions
-    about: Ask usage questions when Discussions are enabled.

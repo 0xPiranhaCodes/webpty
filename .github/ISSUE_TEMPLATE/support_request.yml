@@ -1,0 +1,60 @@
+name: Support request
+description: Ask a focused installation, configuration, deployment, or usage question
+title: "[Support]: "
+labels:
+  - support
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Support is provided on a best-effort basis; response times are not guaranteed. Do not disclose credentials, capability links, terminal contents, or vulnerabilities. Vulnerabilities must not be reported publicly; follow [SECURITY.md](https://github.com/0xPiranhaCodes/webpty/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: webpty version
+      description: Run `webpty version` and provide its output.
+      placeholder: v1.2.3
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation method
+      options:
+        - Install script
+        - Homebrew
+        - Binary archive
+        - Docker
+        - Built from source
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host OS and architecture
+      description: Include the operating system version and architecture.
+      placeholder: macOS 27 arm64
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question or goal
+      description: Describe what you are trying to accomplish and where you are blocked.
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: Documentation and steps already tried
+      description: Link the documentation you consulted and describe the commands or steps you attempted.
+    validations:
+      required: true
+  - type: checkboxes
+    id: sensitive-data
+    attributes:
+      label: Sensitive data check
+      options:
+        - label: I have not included credentials, capability links, terminal contents, or vulnerability details.
+          required: true
