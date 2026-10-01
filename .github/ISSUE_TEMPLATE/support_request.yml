@@ -2,7 +2,7 @@ name: Support request
 description: Ask a focused installation, configuration, deployment, or usage question
 title: "[Support]: "
 labels:
-  - support
+  - question
 body:
   - type: markdown
     attributes:
