@@ -9,7 +9,7 @@ import (
 // go.mod's toolchain line is the one Go version of the project: setup-go
 // reads it in every workflow, the Dockerfile's builder pins the same
 // release, verify-archives.sh requires release binaries to report it, and
-// the docs and the design spec name it.
+// the docs and the product spec name it.
 func TestGoToolchainIsOneVersionEverywhere(t *testing.T) {
 	m := regexp.MustCompile(`(?m)^toolchain go(\d+\.\d+\.\d+)$`).FindStringSubmatch(readRepoFile(t, "go.mod"))
 	if m == nil {
@@ -58,7 +58,7 @@ func TestGoToolchainIsOneVersionEverywhere(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"README.md", "docs/superpowers/specs/2026-10-01-go-enterprise-rewrite-design.md"} {
+	for _, name := range []string{"README.md", "docs/specs/product.md"} {
 		body := readRepoFile(t, name)
 		if !strings.Contains(body, "Go "+want) || !strings.Contains(body, "toolchain") {
 			t.Errorf("%s does not state the required Go %s toolchain", name, want)

@@ -169,6 +169,7 @@ in [docs/configuration.md](docs/configuration.md).
 
 ## Documentation
 
+- [Canonical product and repository specification](docs/specs/product.md)
 - [Configuration reference](docs/configuration.md)
 - [Deployment, TLS, and reverse proxies](docs/deployment.md)
 - [Hardening: command policy, environment, limits](docs/hardening.md)
@@ -197,8 +198,16 @@ needs `npx playwright install chromium webkit` once. `make
 homebrew-validate` needs Homebrew, and the `docker-*` targets need a Docker
 daemon.
 
-Pull requests are welcome. Please open an issue to discuss larger changes
-first.
+## Contributing and community
+
+webpty is maintainer-led. Before proposing a change, review the contribution
+guide and open an issue to discuss larger changes so scope and approach can be
+agreed before implementation.
+
+- [Contributing guide](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security policy and private vulnerability reporting](SECURITY.md)
+- [Support channels](SUPPORT.md)
 
 ## License
 
