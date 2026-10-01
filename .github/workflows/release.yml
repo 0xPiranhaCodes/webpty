@@ -1,0 +1,352 @@
+name: Release
+
+# Pushing a version tag (v1.2.3) builds macOS and Linux archives, SHA-256
+# checksums, SPDX SBOMs, a Homebrew formula, and the container image as a
+# local OCI archive; checks and attests all of them; creates a draft release;
+# then pushes the attested image to its tags, and only then publishes the
+# release. A failure anywhere leaves at most a draft, and no image tag exists
+# until the image's provenance has been attested and verified.
+#
+# npm runs only in the read-only jobs. Jobs that can write the repository,
+# packages, or mint OIDC tokens never install dependencies or run npm.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Third-party actions are pinned to full commit SHAs; the comment names the release.
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: The tag is a release version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || {
+            echo "::error::$TAG is not a release version such as v1.2.3 or v1.2.3-rc.1"
+            exit 1
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.23.2"
+      - run: make web-install
+      - name: Vet, race tests, and frontend checks
+        run: make vet test-race web-check
+
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.23.2"
+      - run: make web-install
+      - name: Go vulnerabilities (govulncheck)
+        run: make vuln-go
+      - name: npm advisories
+        run: make vuln-npm
+      - name: Secrets in git history (gitleaks)
+        run: make secrets
+
+  web-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.23.2"
+      - name: Build the web UI for embedding
+        run: make web-assets
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-assets
+          path: internal/webassets/dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  archives:
+    needs: [verify, scan, web-assets]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: web-assets
+          path: internal/webassets/dist
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+      - name: Archives, checksums, and SBOMs (goreleaser, nothing published)
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.18.2
+          args: release --clean --skip=publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # read-only in this job
+      - name: Add the Homebrew formula to the checksums
+        run: WEBPTY_REPOSITORY="$GITHUB_REPOSITORY" scripts/release-assemble.sh dist
+      - name: Archive contents, checksums, SBOMs, and a clean install
+        run: scripts/verify-archives.sh dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dist
+          path: |
+            dist/*.tar.gz
+            dist/*.spdx.json
+            dist/webpty_*_checksums.txt
+            dist/webpty.rb
+          if-no-files-found: error
+          retention-days: 7
+
+  homebrew:
+    needs: archives
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist
+      - name: Install, test, and upgrade the formula with Homebrew
+        run: make homebrew-validate
+
+  # The image is built exactly once, into a local OCI archive. Later jobs
+  # attest and publish that archive by digest; no registry sees it until
+  # every gate has passed.
+  image-build:
+    needs: archives
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.oci.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist
+      - name: Binaries from the verified Linux archives
+        run: scripts/image-binaries.sh dist dist/image
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build linux/amd64 and linux/arm64 into an OCI archive
+        run: |
+          docker buildx build --target release --build-context binaries=dist/image \
+            --platform linux/amd64,linux/arm64 --provenance mode=max --sbom true \
+            --output type=oci,dest=webpty-image.oci.tar .
+      - name: Record the image index digest
+        id: oci
+        run: |
+          digest=$(tar -xOf webpty-image.oci.tar index.json |
+            jq -er 'if (.manifests | length) == 1 then .manifests[0].digest else error("expected one image index") end')
+          echo "digest=$digest" >>"$GITHUB_OUTPUT"
+          sha256sum webpty-image.oci.tar >webpty-image.oci.tar.sha256
+      - name: Smoke-test the exported linux/amd64 image
+        run: |
+          skopeo copy --override-os linux --override-arch amd64 \
+            oci-archive:webpty-image.oci.tar docker-daemon:webpty:release
+          scripts/docker-smoke.sh webpty:release
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-image
+          path: |
+            webpty-image.oci.tar
+            webpty-image.oci.tar.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  # Provenance is recorded for the digest before any tag can point at it.
+  # The attestation lives in GitHub's attestation store, so this job needs
+  # no registry credentials.
+  image-attest:
+    needs: image-build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # keyless attestation through GitHub OIDC
+      attestations: write # build provenance
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-image
+      - name: Image name
+        id: vars
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >>"$GITHUB_OUTPUT"
+      - name: Attest the image index digest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.vars.outputs.image }}
+          subject-digest: ${{ needs.image-build.outputs.digest }}
+          push-to-registry: false
+      - name: The attestation verifies against the tagged release workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ needs.image-build.outputs.digest }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          sha256sum --check --strict webpty-image.oci.tar.sha256
+          mkdir oci && tar -xf webpty-image.oci.tar -C oci
+          # The index blob's own SHA-256 is the image digest.
+          gh attestation verify "oci/blobs/sha256/${DIGEST#sha256:}" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" --source-ref "refs/tags/${TAG}"
+
+  publish:
+    needs: [verify, scan, archives, homebrew, image-build, image-attest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the draft release and upload its assets
+      id-token: write # keyless cosign signing and attestations through GitHub OIDC
+      attestations: write # build provenance
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Every file matches the checksums
+        env:
+          TAG: ${{ github.ref_name }}
+        run: cd dist && sha256sum --check --strict "webpty_${TAG#v}_checksums.txt"
+      - name: Sign the checksums keylessly and verify the signing identity
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          checksums="dist/webpty_${TAG#v}_checksums.txt"
+          cosign sign-blob --yes --bundle "$checksums.sigstore.json" "$checksums"
+          cosign verify-blob --bundle "$checksums.sigstore.json" \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$checksums"
+      - name: Attest build provenance for the archives, checksums, and formula
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/webpty_*_checksums.txt
+            dist/webpty.rb
+      - name: Create the draft release with every asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            echo "Install: \`curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/scripts/install.sh | sh -s -- --version ${version}\`"
+            echo
+            echo "Homebrew (needs cosign; see docs/upgrading.md):"
+            echo
+            echo '```'
+            echo "curl -fsSLO https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/scripts/homebrew-tap.sh"
+            echo "sh homebrew-tap.sh --version ${version}"
+            echo '```'
+            echo
+            echo "Verify a download:"
+            echo
+            echo '```'
+            echo "sha256sum --check --ignore-missing webpty_${version}_checksums.txt"
+            echo "cosign verify-blob --bundle webpty_${version}_checksums.txt.sigstore.json \\"
+            echo "  --certificate-identity https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG} \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com webpty_${version}_checksums.txt"
+            echo "gh attestation verify webpty.rb --repo ${GITHUB_REPOSITORY} \\"
+            echo "  --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/release.yml --source-ref refs/tags/${TAG}"
+            echo "gh attestation verify oci://ghcr.io/${GITHUB_REPOSITORY,,}:${version} --repo ${GITHUB_REPOSITORY} \\"
+            echo "  --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/release.yml --source-ref refs/tags/${TAG}"
+            echo '```'
+          } >"$notes"
+          prerelease=
+          case $TAG in *-*) prerelease=--prerelease ;; esac
+          # shellcheck disable=SC2086 # $prerelease is empty or one flag
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease \
+            --title "webpty $TAG" --notes-file "$notes" \
+            dist/*.tar.gz dist/*.spdx.json "dist/webpty_${version}_checksums.txt" \
+            "dist/webpty_${version}_checksums.txt.sigstore.json" dist/webpty.rb
+
+  # The first registry write of the release. It copies the attested archive
+  # unchanged, so every tag resolves to the attested digest.
+  image:
+    needs: [publish, image-build, image-attest]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write # push the attested image to ghcr.io
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-image
+      - name: The archive is the attested image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ needs.image-build.outputs.digest }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          sha256sum --check --strict webpty-image.oci.tar.sha256
+          mkdir oci && tar -xf webpty-image.oci.tar -C oci
+          [ "$(jq -er '.manifests[0].digest' oci/index.json)" = "$DIGEST" ]
+          gh attestation verify "oci/blobs/sha256/${DIGEST#sha256:}" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" --source-ref "refs/tags/${TAG}"
+      - name: Publish the release tags
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ needs.image-build.outputs.digest }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${TAG#v}"
+          tags=$version
+          case $version in *-*) ;; *) tags="$tags ${version%.*} latest" ;; esac
+          printf '%s' "$REGISTRY_TOKEN" | skopeo login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          for tag in $tags; do
+            skopeo copy --all --preserve-digests oci:oci "docker://$image:$tag"
+            pushed="sha256:$(skopeo inspect --raw "docker://$image:$tag" | sha256sum | cut -d' ' -f1)"
+            [ "$pushed" = "$DIGEST" ] || { echo "::error::$image:$tag is $pushed, not the attested $DIGEST"; exit 1; }
+            echo "$image:$tag -> $DIGEST"
+          done
+
+  finalize:
+    needs: [publish, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # take the release out of draft
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

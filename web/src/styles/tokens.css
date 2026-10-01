@@ -1,0 +1,49 @@
+:root {
+  /* Surfaces */
+  --void: #07090d;
+  --deck: #0d121a;
+  --raised: #141b26;
+  --rule: #253142;
+
+  /* Text */
+  --text: #e8eef6;
+  --muted: #8997a8;
+
+  /* State: each hue has exactly one meaning */
+  --live: #45d4e6;
+  --recorded: #9a7cff;
+  --warning: #f0b45a;
+  --destructive: #f06a6a;
+
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.8125rem;
+  --fs-md: 0.875rem;
+  --fs-lg: 1rem;
+  --fs-xl: 1.25rem;
+  --fs-2xl: 1.625rem;
+
+  --radius-control: 2px;
+  --radius-panel: 4px;
+  --spine: 3px;
+  --nav-width: 13rem;
+  --rail-width: 18rem;
+
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 0.75rem;
+  --s4: 1rem;
+  --s5: 1.5rem;
+  --s6: 2rem;
+  --s7: 3rem;
+
+  --state-change: 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --state-change: 0ms;
+  }
+}

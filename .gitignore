@@ -1,7 +1,34 @@
-.python-version
-*.pyc
+# Release builds (goreleaser)
+dist/
 
-dist
-build
-webpty.egg-info
-__pycache__
+# Go
+/bin/
+/webpty
+*.test
+coverage.out
+
+# Node and frontend builds
+node_modules/
+web/dist/
+
+# Embedded frontend build (generated; only the placeholder is tracked)
+!internal/webassets/dist/
+internal/webassets/dist/*
+!internal/webassets/dist/.gitkeep
+
+# Browser test output
+web/test-results/
+web/playwright-report/
+web/e2e/.artifacts/
+
+# Local data
+*.db
+*.db-shm
+*.db-wal
+*.db.lock
+*.pre-restore-*
+*.sqlite
+*.sqlite3
+
+# Agent workspace
+.superpowers/

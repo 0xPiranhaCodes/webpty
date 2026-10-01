@@ -1,0 +1,27 @@
+# Only sources the image build needs; never local data, history, or secrets.
+.git
+.github
+.superpowers
+.vscode
+**/node_modules
+web/dist
+web/test-results
+web/playwright-report
+web/e2e/.artifacts
+internal/webassets/dist/*
+!internal/webassets/dist/.gitkeep
+/dist
+/bin
+docs
+scripts
+*.db
+*.db-shm
+*.db-wal
+*.db.lock
+*.sqlite
+*.sqlite3
+*.pre-restore-*
+*.env
+.env*
+coverage.out
+*.test

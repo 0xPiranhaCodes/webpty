@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Known test values: the RFC 6455 sample WebSocket nonce, a fake invitation token, and a redaction canary"
+regexes = [
+  '''^dGhlIHNhbXBsZSBub25jZQ==$''',
+  '''^wpi_Z2l2ZS1tZS1hLXNlY3JldA$''',
+  '''^argument-secret-456$''',
+]
