@@ -17,7 +17,7 @@ dist=$1
 out=$2
 [ ! -e "$out" ] || die "$out already exists"
 set -- "$dist"/webpty_*_checksums.txt
-[ $# -eq 1 ] && [ -f "$1" ] || die "expected one checksums file in $dist"
+{ [ $# -eq 1 ] && [ -f "$1" ]; } || die "expected one checksums file in $dist"
 checksums=$1
 version=$(basename "$checksums")
 version=${version#webpty_}
@@ -41,7 +41,7 @@ for arch in amd64 arm64; do
 	[ "$(sha256 "$dist/$archive")" = "$expected" ] || die "checksum mismatch for $archive"
 	mkdir "$staging/linux_$arch"
 	tar -xzf "$dist/$archive" -C "$staging/linux_$arch" webpty
-	[ -f "$staging/linux_$arch/webpty" ] && [ ! -L "$staging/linux_$arch/webpty" ] ||
+	{ [ -f "$staging/linux_$arch/webpty" ] && [ ! -L "$staging/linux_$arch/webpty" ]; } ||
 		die "$archive has no regular webpty file"
 	chmod 0755 "$staging/linux_$arch/webpty"
 done

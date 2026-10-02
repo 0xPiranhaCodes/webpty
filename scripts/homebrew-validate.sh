@@ -17,7 +17,7 @@ die() {
 command -v brew >/dev/null 2>&1 || die "brew is not installed"
 dist=$(cd "${1:-dist}" && pwd)
 set -- "$dist"/webpty_*_checksums.txt
-[ $# -eq 1 ] && [ -f "$1" ] || die "expected one checksums file in $dist"
+{ [ $# -eq 1 ] && [ -f "$1" ]; } || die "expected one checksums file in $dist"
 checksums=$1
 version=$(basename "$checksums")
 version=${version#webpty_}

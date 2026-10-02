@@ -17,7 +17,7 @@ die() {
 
 dist=${1:-dist}
 set -- "$dist"/webpty_*_checksums.txt
-[ $# -eq 1 ] && [ -f "$1" ] || die "expected one checksums file in $dist"
+{ [ $# -eq 1 ] && [ -f "$1" ]; } || die "expected one checksums file in $dist"
 checksums=$1
 version=$(basename "$checksums")
 version=${version#webpty_}

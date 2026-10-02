@@ -208,7 +208,7 @@ say "verified SHA-256 $actual"
 
 mkdir "$work/x"
 tar -xzf "$work/$archive" -C "$work/x" webpty || die "$archive does not contain webpty"
-[ -f "$work/x/webpty" ] && [ ! -L "$work/x/webpty" ] || die "$archive has no regular webpty file"
+{ [ -f "$work/x/webpty" ] && [ ! -L "$work/x/webpty" ]; } || die "$archive has no regular webpty file"
 
 # --- install --------------------------------------------------------------
 

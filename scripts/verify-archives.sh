@@ -26,7 +26,7 @@ else
 fi
 
 set -- "$dist"/webpty_*_checksums.txt
-[ $# -eq 1 ] && [ -f "$1" ] || die "expected one webpty_*_checksums.txt in $dist"
+{ [ $# -eq 1 ] && [ -f "$1" ]; } || die "expected one webpty_*_checksums.txt in $dist"
 checksums=$1
 version=$(basename "$checksums")
 version=${version#webpty_}
