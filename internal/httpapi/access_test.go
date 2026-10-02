@@ -810,6 +810,9 @@ func TestAccessExpiryIsEnforcedPerActionAndClosesWithoutHeartbeat(t *testing.T) 
 	_, cookie := h.redeem(inv.token)
 	editor := h.dialAs(server, id, cookie)
 	editor.readType("ready")
+	// The snapshot comes from the presence loop, so it may arrive after the
+	// input loop's error reply; take it here before expecting other presence messages.
+	editor.readType("presence_snapshot")
 	editor.send(`{"type":"input","data":"a"}`)
 	eventually(t, "input before expiry", func() bool { return p.Input() == "a" })
 
