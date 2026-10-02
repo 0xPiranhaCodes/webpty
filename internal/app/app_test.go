@@ -163,7 +163,10 @@ func serveAdmin(t *testing.T, cfg config.Config) (*client, context.CancelFunc, <
 	})
 
 	jar, _ := cookiejar.New(nil)
-	c := &client{t: t, base: "http://" + listener.Addr().String(), http: &http.Client{Jar: jar}}
+	// One connection per request: some tests run Serve with short server
+	// timeouts, and a POST reusing a keep-alive connection the server has
+	// just closed fails with EOF instead of being retried.
+	c := &client{t: t, base: "http://" + listener.Addr().String(), http: &http.Client{Jar: jar, Transport: &http.Transport{DisableKeepAlives: true}}}
 	if response := c.do(http.MethodPost, "/api/v1/admin/login", `{"password":"CHANGEME"}`); response.StatusCode != http.StatusOK {
 		t.Fatalf("bootstrap login = %d", response.StatusCode)
 	}
@@ -392,7 +395,7 @@ func TestServeSharesTerminalWithViewerGrant(t *testing.T) {
 	token, _ := decode(t, granted)["token"].(string)
 
 	jar, _ := cookiejar.New(nil)
-	guest := &client{t: t, base: c.base, http: &http.Client{Jar: jar}}
+	guest := &client{t: t, base: c.base, http: &http.Client{Jar: jar, Transport: &http.Transport{DisableKeepAlives: true}}}
 	redeemed := guest.do(http.MethodPost, "/api/v1/access/redeem", fmt.Sprintf(`{"token":%q}`, token))
 	if redeemed.StatusCode != http.StatusOK || decode(t, redeemed)["role"] != "viewer" {
 		t.Fatalf("redeem = %d", redeemed.StatusCode)
