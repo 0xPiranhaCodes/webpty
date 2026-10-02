@@ -776,7 +776,10 @@ func TestHeartbeatRevalidatesGuestOnEachTickAndNotBefore(t *testing.T) {
 	client.send(`{"type":"ping"}`)
 	client.readType("pong")
 
-	ticks <- time.Now()
+	// The tick is delivered while the client reads: the heartbeat's previous
+	// ping is only answered during a Read, and until it is answered the
+	// heartbeat cannot take the next tick.
+	go func() { ticks <- time.Now() }()
 	if code, _ := client.closeStatus(); code != httpapi.CloseUnauthorized {
 		t.Fatalf("close = %v, want %v", code, httpapi.CloseUnauthorized)
 	}
@@ -795,7 +798,7 @@ func TestHeartbeatClosesOwnerOnceTheAdminSessionExpires(t *testing.T) {
 	owner.send(`{"type":"ping"}`)
 	owner.readType("pong")
 
-	ticks <- time.Now()
+	go func() { ticks <- time.Now() }()
 	if code, _ := owner.closeStatus(); code != httpapi.CloseUnauthorized {
 		t.Fatalf("close = %v, want %v", code, httpapi.CloseUnauthorized)
 	}
