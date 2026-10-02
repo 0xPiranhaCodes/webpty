@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
-import { captureInviteToken, redeemOnce, resetInviteStateForTests, stashInviteFromLocation, takePendingInvite } from './invite'
+import {
+  captureInviteToken,
+  redeemOnce,
+  resetInviteStateForTests,
+  stashInviteFromLocation,
+  takePendingInvite,
+} from './invite'
 
 const token = 'wpi_Z2l2ZS1tZS1hLXNlY3JldA'
 
@@ -13,14 +19,20 @@ beforeEach(() => {
 
 describe('invite token capture', () => {
   test('removes the token from the address bar without adding history', () => {
-    window.history.replaceState({ keep: 1 }, '', `/join?from=chat#token=${token}`)
+    window.history.replaceState(
+      { keep: 1 },
+      '',
+      `/join?from=chat#token=${token}`,
+    )
     const length = window.history.length
 
     expect(captureInviteToken()).toBe(token)
 
     expect(window.location.hash).toBe('')
     expect(window.location.href).not.toContain(token)
-    expect(window.location.pathname + window.location.search).toBe('/join?from=chat')
+    expect(window.location.pathname + window.location.search).toBe(
+      '/join?from=chat',
+    )
     expect(window.history.length).toBe(length)
     expect(window.history.state).toEqual({ keep: 1 })
   })
@@ -53,7 +65,10 @@ describe('invite token capture', () => {
 describe('redeemOnce', () => {
   test('issues one redemption per token even when called repeatedly', async () => {
     const redeem = vi.fn(async (t: string) => ({ ok: t.length }))
-    const [a, b] = await Promise.all([redeemOnce(token, redeem), redeemOnce(token, redeem)])
+    const [a, b] = await Promise.all([
+      redeemOnce(token, redeem),
+      redeemOnce(token, redeem),
+    ])
     expect(redeem).toHaveBeenCalledTimes(1)
     expect(a).toBe(b)
   })
@@ -62,8 +77,12 @@ describe('redeemOnce', () => {
     const redeem = vi.fn(async () => {
       throw new Error('invalid or expired invitation')
     })
-    await expect(redeemOnce(token, redeem)).rejects.toThrow('invalid or expired invitation')
-    await expect(redeemOnce(token, redeem)).rejects.toThrow('invalid or expired invitation')
+    await expect(redeemOnce(token, redeem)).rejects.toThrow(
+      'invalid or expired invitation',
+    )
+    await expect(redeemOnce(token, redeem)).rejects.toThrow(
+      'invalid or expired invitation',
+    )
     expect(redeem).toHaveBeenCalledTimes(1)
   })
 })

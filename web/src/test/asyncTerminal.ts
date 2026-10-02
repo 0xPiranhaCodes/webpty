@@ -22,7 +22,9 @@ export class AsyncTerminal implements WritableTerminal {
 
   write(data: Uint8Array | string, done?: () => void) {
     if (this.pendingBytes > (this.options.watermark ?? 50_000_000)) {
-      throw new Error('write data discarded, use flow control to avoid losing data')
+      throw new Error(
+        'write data discarded, use flow control to avoid losing data',
+      )
     }
     this.writes++
     this.pending.push({ data, done })
@@ -49,7 +51,10 @@ export class AsyncTerminal implements WritableTerminal {
     const next = this.pending.shift()
     if (!next) return false
     this.pendingBytes -= next.data.length
-    this.text += typeof next.data === 'string' ? next.data : new TextDecoder().decode(next.data)
+    this.text +=
+      typeof next.data === 'string'
+        ? next.data
+        : new TextDecoder().decode(next.data)
     this.parsedAt.push(`${this.cols}x${this.rows}`)
     next.done?.()
     return true

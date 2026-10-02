@@ -1,5 +1,19 @@
-import { ArrowLeft, Download, Pause, Play, Trash2, TriangleAlert } from 'lucide-react'
-import { type KeyboardEvent, useEffect, useId, useReducer, useRef, useState } from 'react'
+import {
+  ArrowLeft,
+  Download,
+  Pause,
+  Play,
+  Trash2,
+  TriangleAlert,
+} from 'lucide-react'
+import {
+  type KeyboardEvent,
+  useEffect,
+  useId,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 
 import { useApi } from '../api/services'
@@ -33,7 +47,10 @@ export function RecordingPlayerPage() {
   const [loaded, setLoaded] = useState(0)
   const data = useAsync(`recording:${id}`, async (signal) => {
     const recording = await api.getRecording(id, signal)
-    const events = await loadAllEvents((cursor) => api.recordingEvents(id, cursor, signal), setLoaded)
+    const events = await loadAllEvents(
+      (cursor) => api.recordingEvents(id, cursor, signal),
+      setLoaded,
+    )
     return { recording, events }
   })
 
@@ -50,20 +67,47 @@ export function RecordingPlayerPage() {
         <header className="workspace__bar">
           <div className="workspace__title">{back}</div>
         </header>
-        <section className="workspace__terminal workspace__terminal--message" aria-label="Recording playback">
+        <section
+          className="workspace__terminal workspace__terminal--message"
+          aria-label="Recording playback"
+        >
           {data.status === 'error' ? (
-            <ErrorState error={data.error} subject="recording" onRetry={data.error.code === 'offline' ? data.reload : undefined} />
+            <ErrorState
+              error={data.error}
+              subject="recording"
+              onRetry={data.error.code === 'offline' ? data.reload : undefined}
+            />
           ) : (
-            <Loading label={loaded ? `Loading recording, ${loaded} events` : 'Loading recording'} />
+            <Loading
+              label={
+                loaded
+                  ? `Loading recording, ${loaded} events`
+                  : 'Loading recording'
+              }
+            />
           )}
         </section>
       </main>
     )
   }
-  return <PlayerView recording={data.data.recording} events={data.data.events} back={back} />
+  return (
+    <PlayerView
+      recording={data.data.recording}
+      events={data.data.events}
+      back={back}
+    />
+  )
 }
 
-function PlayerView({ recording, events, back }: { recording: Recording; events: PlaybackEvent[]; back: React.ReactNode }) {
+function PlayerView({
+  recording,
+  events,
+  back,
+}: {
+  recording: Recording
+  events: PlaybackEvent[]
+  back: React.ReactNode
+}) {
   const api = useApi()
   const env = useTerminalEnvironment()
   const navigate = useNavigate()
@@ -132,15 +176,26 @@ function PlayerView({ recording, events, back }: { recording: Recording; events:
             Recording <span className="mono">{recording.id}</span>
           </h1>
         </div>
-        <p className="readout" data-testid="readout" role="status" aria-live="polite">
-          <span className="readout__state readout__state--playback">Playback</span>
+        <p
+          className="readout"
+          data-testid="readout"
+          role="status"
+          aria-live="polite"
+        >
+          <span className="readout__state readout__state--playback">
+            Playback
+          </span>
           <span className="muted">{playing ? 'playing' : 'paused'}</span>
         </p>
         <div className="workspace__actions">
           <a className="btn" href={api.exportUrl(recording.id)} download>
             <Download aria-hidden size={14} /> Export as asciicast
           </a>
-          <button type="button" className="btn btn--destructive-text" onClick={() => setDeleting(true)}>
+          <button
+            type="button"
+            className="btn btn--destructive-text"
+            onClick={() => setDeleting(true)}
+          >
             <Trash2 aria-hidden size={14} /> Delete recording
           </button>
         </div>
@@ -149,8 +204,17 @@ function PlayerView({ recording, events, back }: { recording: Recording; events:
       <section className="workspace__terminal" aria-label="Recording playback">
         <div ref={host} className="workspace__screen" data-input="off" />
         <div className="transport">
-          <button type="button" className="btn btn--primary transport__play" onClick={() => player?.toggle()} aria-label={playing ? 'Pause' : 'Play'}>
-            {playing ? <Pause aria-hidden size={14} /> : <Play aria-hidden size={14} />}
+          <button
+            type="button"
+            className="btn btn--primary transport__play"
+            onClick={() => player?.toggle()}
+            aria-label={playing ? 'Pause' : 'Play'}
+          >
+            {playing ? (
+              <Pause aria-hidden size={14} />
+            ) : (
+              <Play aria-hidden size={14} />
+            )}
           </button>
           <input
             type="range"
@@ -168,7 +232,12 @@ function PlayerView({ recording, events, back }: { recording: Recording; events:
           <div className="speed" role="radiogroup" aria-label="Playback speed">
             {speeds.map((s) => (
               <label key={s} className="speed__option">
-                <input type="radio" name={speedName} checked={(player?.speed ?? 1) === s} onChange={() => player?.setSpeed(s as Speed)} />
+                <input
+                  type="radio"
+                  name={speedName}
+                  checked={(player?.speed ?? 1) === s}
+                  onChange={() => player?.setSpeed(s as Speed)}
+                />
                 <span>{`${s}×`}</span>
               </label>
             ))}
@@ -181,8 +250,10 @@ function PlayerView({ recording, events, back }: { recording: Recording; events:
           <p className="notice notice--warning">
             <TriangleAlert aria-hidden size={14} />
             <span>
-              This recording is incomplete: {failureCopy[recording.failureCode ?? ''] ?? 'it stopped before the terminal ended'}. Playback ends where the
-              recording stopped.
+              This recording is incomplete:{' '}
+              {failureCopy[recording.failureCode ?? ''] ??
+                'it stopped before the terminal ended'}
+              . Playback ends where the recording stopped.
             </span>
           </p>
         )}
@@ -201,7 +272,8 @@ function PlayerView({ recording, events, back }: { recording: Recording; events:
             <dd className="mono">{formatClock(recording.durationMs)}</dd>
             <dt>Size</dt>
             <dd>
-              {formatBytes(recording.compressedBytes)} compressed, {formatBytes(recording.uncompressedBytes)} raw
+              {formatBytes(recording.compressedBytes)} compressed,{' '}
+              {formatBytes(recording.uncompressedBytes)} raw
             </dd>
             <dt>Screen</dt>
             <dd className="mono">
@@ -220,10 +292,15 @@ function PlayerView({ recording, events, back }: { recording: Recording; events:
           onCancel={() => setDeleting(false)}
           onConfirm={async () => {
             await api.deleteRecording(recording.id)
-            navigate('/admin/recordings', { state: { notice: 'Recording deleted.' } })
+            navigate('/admin/recordings', {
+              state: { notice: 'Recording deleted.' },
+            })
           }}
         >
-          <p>Its events are removed permanently. The audit log keeps a record that it existed.</p>
+          <p>
+            Its events are removed permanently. The audit log keeps a record
+            that it existed.
+          </p>
         </ConfirmDialog>
       )}
     </main>

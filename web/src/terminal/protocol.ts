@@ -1,4 +1,14 @@
-import { arrayOf, type Decoded, DecodeError, nullable, num, object, oneOf, optional, str } from '../api/decode'
+import {
+  arrayOf,
+  type Decoded,
+  DecodeError,
+  nullable,
+  num,
+  object,
+  oneOf,
+  optional,
+  str,
+} from '../api/decode'
 import { base64ToBytes, decodePermissions, terminalStates } from '../api/types'
 
 /** WebSocket subprotocol spoken by internal/httpapi/terminal_ws.go. */
@@ -18,10 +28,21 @@ const role = oneOf('owner', 'editor', 'viewer')
 const participant = object({ id: str, role })
 export type Participant = Decoded<typeof participant>
 
-const readySession = object({ id: str, state: oneOf(...terminalStates), rows: num, cols: num })
+const readySession = object({
+  id: str,
+  state: oneOf(...terminalStates),
+  rows: num,
+  cols: num,
+})
 
 const decoders = {
-  ready: object({ version: num, session: readySession, seq: num, role, permissions: decodePermissions }),
+  ready: object({
+    version: num,
+    session: readySession,
+    seq: num,
+    role,
+    permissions: decodePermissions,
+  }),
   output: object({ seq: num, data: str }),
   exit: object({ state: str, exitCode: nullable(num), signal: optional(str) }),
   error: object({
@@ -33,21 +54,47 @@ const decoders = {
   }),
   pong: object({}),
   resize: object({ rows: num, cols: num }),
-  presence_snapshot: object({ version: num, self: str, participants: arrayOf(participant) }),
+  presence_snapshot: object({
+    version: num,
+    self: str,
+    participants: arrayOf(participant),
+  }),
   participant_joined: object({ version: num, participant }),
-  participant_left: object({ version: num, participant, reason: optional(str) }),
-  permission_changed: object({ version: num, participant, permissions: decodePermissions, reason: optional(str) }),
-  recording_status: object({ recordingId: str, status: str, code: str, message: str }),
+  participant_left: object({
+    version: num,
+    participant,
+    reason: optional(str),
+  }),
+  permission_changed: object({
+    version: num,
+    participant,
+    permissions: decodePermissions,
+    reason: optional(str),
+  }),
+  recording_status: object({
+    recordingId: str,
+    status: str,
+    code: str,
+    message: str,
+  }),
 }
 
-type Raw = { [K in keyof typeof decoders]: { type: K } & Decoded<(typeof decoders)[K]> }
+type Raw = {
+  [K in keyof typeof decoders]: { type: K } & Decoded<(typeof decoders)[K]>
+}
 export type ReadyMessage = Raw['ready']
 export type ExitMessage = Raw['exit']
 export type ErrorMessage = Raw['error']
 export type RecordingStatusMessage = Raw['recording_status']
-export type PresenceMessage = Raw['presence_snapshot' | 'participant_joined' | 'participant_left' | 'permission_changed']
+export type PresenceMessage = Raw[
+  | 'presence_snapshot'
+  | 'participant_joined'
+  | 'participant_left'
+  | 'permission_changed']
 export type OutputMessage = { type: 'output'; seq: number; data: Uint8Array }
-export type ServerMessage = Exclude<Raw[keyof Raw], Raw['output']> | OutputMessage
+export type ServerMessage =
+  | Exclude<Raw[keyof Raw], Raw['output']>
+  | OutputMessage
 
 const validSize = (n: number) => Number.isInteger(n) && n > 0 && n <= 1000
 
@@ -74,11 +121,14 @@ export function parseServerMessage(raw: string): ServerMessage | null {
     }
     return { type, ...decoded } as ServerMessage
   } catch (error) {
-    if (error instanceof DecodeError || error instanceof DOMException) return null
+    if (error instanceof DecodeError || error instanceof DOMException)
+      return null
     throw error
   }
 }
 
-export const encodeInput = (data: string) => JSON.stringify({ type: 'input', data })
-export const encodeResize = (rows: number, cols: number) => JSON.stringify({ type: 'resize', rows, cols })
+export const encodeInput = (data: string) =>
+  JSON.stringify({ type: 'input', data })
+export const encodeResize = (rows: number, cols: number) =>
+  JSON.stringify({ type: 'resize', rows, cols })
 export const encodePing = () => JSON.stringify({ type: 'ping' })

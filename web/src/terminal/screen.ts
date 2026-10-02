@@ -22,6 +22,8 @@ export function createScreenQueue(xterm: XtermHandle, element: HTMLElement) {
         mirrorSize()
       },
     },
-    { onIdleChange: (idle) => (element.dataset.render = idle ? 'idle' : 'busy') },
+    {
+      onIdleChange: (idle) => (element.dataset.render = idle ? 'idle' : 'busy'),
+    },
   )
 }

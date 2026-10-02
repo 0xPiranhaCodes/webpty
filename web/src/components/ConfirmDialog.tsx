@@ -17,7 +17,14 @@ export interface ConfirmDialogProps {
  * A modal confirmation. Focus starts on Cancel so Enter never confirms a
  * destructive action by accident; Escape cancels; Tab stays inside.
  */
-export function ConfirmDialog({ title, children, confirmLabel, onConfirm, onCancel, destructive = true }: ConfirmDialogProps) {
+export function ConfirmDialog({
+  title,
+  children,
+  confirmLabel,
+  onConfirm,
+  onCancel,
+  destructive = true,
+}: ConfirmDialogProps) {
   const titleId = useId()
   const bodyId = useId()
   const panel = useRef<HTMLDivElement>(null)
@@ -37,7 +44,9 @@ export function ConfirmDialog({ title, children, confirmLabel, onConfirm, onCanc
       onCancel()
     }
     if (event.key !== 'Tab' || !panel.current) return
-    const focusable = [...panel.current.querySelectorAll<HTMLElement>('button:not([disabled])')]
+    const focusable = [
+      ...panel.current.querySelectorAll<HTMLElement>('button:not([disabled])'),
+    ]
     const first = focusable[0]
     const last = focusable.at(-1)
     if (event.shiftKey && document.activeElement === first) {
@@ -63,17 +72,37 @@ export function ConfirmDialog({ title, children, confirmLabel, onConfirm, onCanc
 
   return (
     <div className="dialog-backdrop" onKeyDown={onKeyDown}>
-      <div ref={panel} className="dialog" role="alertdialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={bodyId}>
+      <div
+        ref={panel}
+        className="dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={bodyId}
+      >
         <h2 id={titleId}>{title}</h2>
         <div id={bodyId} className="dialog__body">
           {children}
         </div>
         {error && <InlineError>{error}</InlineError>}
         <div className="dialog__actions">
-          <button ref={cancel} type="button" className="btn" onClick={onCancel} disabled={pending}>
+          <button
+            ref={cancel}
+            type="button"
+            className="btn"
+            onClick={onCancel}
+            disabled={pending}
+          >
             Cancel
           </button>
-          <button type="button" className={destructive ? 'btn btn--destructive' : 'btn btn--primary'} onClick={confirm} disabled={pending}>
+          <button
+            type="button"
+            className={
+              destructive ? 'btn btn--destructive' : 'btn btn--primary'
+            }
+            onClick={confirm}
+            disabled={pending}
+          >
             {pending ? 'Working…' : confirmLabel}
           </button>
         </div>

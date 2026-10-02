@@ -67,10 +67,13 @@ describe('RenderQueue', () => {
     const queue = new RenderQueue(terminal, { maxChunkBytes: 8 })
     for (let generation = 0; generation < 50; generation++) {
       queue.reset(80, 24)
-      for (let line = 0; line < 20; line++) queue.write(enc(`g${generation}:${line}\n`))
+      for (let line = 0; line < 20; line++)
+        queue.write(enc(`g${generation}:${line}\n`))
     }
     await queue.idle()
-    expect(terminal.text).toBe(Array.from({ length: 20 }, (_, line) => `g49:${line}\n`).join(''))
+    expect(terminal.text).toBe(
+      Array.from({ length: 20 }, (_, line) => `g49:${line}\n`).join(''),
+    )
   })
 
   test('megabytes of queued output never exceed the terminal watermark', async () => {

@@ -14,14 +14,21 @@ export function setting(settings: RuntimeSettings, key: string) {
 }
 
 /** Security and setup findings derived from real configuration and state. */
-export function findings(terminals: Terminal[], recordings: Recording[], settings: RuntimeSettings): Finding[] {
+export function findings(
+  terminals: Terminal[],
+  recordings: Recording[],
+  settings: RuntimeSettings,
+): Finding[] {
   const out: Finding[] = []
   const origin = setting(settings, 'WEBPTY_PUBLIC_ORIGIN') ?? ''
   const running = terminals.filter((t) => t.state === 'running').length
   const max = Number(setting(settings, 'WEBPTY_MAX_SESSIONS'))
   const incomplete = recordings.filter((r) => r.status === 'incomplete').length
 
-  if (origin.startsWith('http://') && !/^http:\/\/(localhost|127\.|\[::1\])/.test(origin)) {
+  if (
+    origin.startsWith('http://') &&
+    !/^http:\/\/(localhost|127\.|\[::1\])/.test(origin)
+  ) {
     out.push({
       tone: 'warning',
       text: 'Shared links and sign-in travel over plain HTTP. Serve webpty behind HTTPS and set WEBPTY_PUBLIC_ORIGIN to the https:// address.',
@@ -33,22 +40,28 @@ export function findings(terminals: Terminal[], recordings: Recording[], setting
     })
   }
   if (setting(settings, 'WEBPTY_RECORDING_ENABLED') === 'false') {
-    out.push({ tone: 'info', text: 'Recording is turned off. New terminals are not recorded.' })
+    out.push({
+      tone: 'info',
+      text: 'Recording is turned off. New terminals are not recorded.',
+    })
   }
   if (incomplete > 0) {
     out.push({
       tone: 'warning',
       text: (
         <>
-          {plural(incomplete, 'recording')} stopped early and {incomplete === 1 ? 'is' : 'are'} incomplete.{' '}
+          {plural(incomplete, 'recording')} stopped early and{' '}
+          {incomplete === 1 ? 'is' : 'are'} incomplete.{' '}
           <Link to="/admin/recordings">Review recordings</Link>
         </>
       ),
     })
   }
   if (Number.isFinite(max) && max > 0 && running >= max) {
-    out.push({ tone: 'warning', text: `All ${max} terminal slots are in use. New terminals will be refused until one ends.` })
+    out.push({
+      tone: 'warning',
+      text: `All ${max} terminal slots are in use. New terminals will be refused until one ends.`,
+    })
   }
   return out
 }
-

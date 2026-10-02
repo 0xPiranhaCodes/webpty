@@ -24,7 +24,11 @@ export default defineConfig({
   use: { trace: 'retain-on-failure' },
   projects: browsers.map(({ name, device, port }) => ({
     name,
-    use: { ...device, viewport: { width: 1440, height: 900 }, baseURL: `http://127.0.0.1:${port}` },
+    use: {
+      ...device,
+      viewport: { width: 1440, height: 900 },
+      baseURL: `http://127.0.0.1:${port}`,
+    },
   })),
   webServer: browsers.map(({ port }, i) => ({
     // The first server builds the frontend once; serve.sh embeds whatever is in web/dist.

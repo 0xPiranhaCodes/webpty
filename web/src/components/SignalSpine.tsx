@@ -1,4 +1,11 @@
-export type SpineState = 'idle' | 'live' | 'live-recording' | 'reconnecting' | 'ended' | 'lost' | 'playback'
+export type SpineState =
+  | 'idle'
+  | 'live'
+  | 'live-recording'
+  | 'reconnecting'
+  | 'ended'
+  | 'lost'
+  | 'playback'
 
 /**
  * The workspace's state rail. Its colour and pattern mirror the text

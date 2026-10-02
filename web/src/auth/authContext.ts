@@ -15,7 +15,10 @@ export interface AdminAuth {
   /** True when the bootstrap password was just typed, so it need not be asked again. */
   knowsBootstrapPassword: boolean
   login(password: string): Promise<void>
-  changePassword(currentPassword: string | undefined, newPassword: string): Promise<void>
+  changePassword(
+    currentPassword: string | undefined,
+    newPassword: string,
+  ): Promise<void>
   logout(): Promise<void>
   sessionEnded(): void
 }

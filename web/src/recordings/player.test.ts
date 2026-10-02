@@ -3,7 +3,12 @@ import { describe, expect, test, vi } from 'vitest'
 import type { PlaybackEvent } from '../api/types'
 import { AsyncTerminal } from '../test/asyncTerminal'
 import { RenderQueue } from '../terminal/renderQueue'
-import { loadAllEvents, Player, type PlayerClock, type TerminalSink } from './player'
+import {
+  loadAllEvents,
+  Player,
+  type PlayerClock,
+  type TerminalSink,
+} from './player'
 
 const enc = (s: string) => new TextEncoder().encode(s)
 
@@ -11,7 +16,14 @@ const events: PlaybackEvent[] = [
   { seq: 1, offsetMs: 0, kind: 'lifecycle', state: 'running' },
   { seq: 2, offsetMs: 0, kind: 'output', data: enc('$ ') },
   { seq: 3, offsetMs: 1200, kind: 'output', data: enc('ls\r\n') },
-  { seq: 4, offsetMs: 1500, kind: 'presence', event: 'joined', participantId: 'pt_1', role: 'viewer' },
+  {
+    seq: 4,
+    offsetMs: 1500,
+    kind: 'presence',
+    event: 'joined',
+    participantId: 'pt_1',
+    role: 'viewer',
+  },
   { seq: 5, offsetMs: 2000, kind: 'resize', rows: 30, cols: 100 },
   { seq: 6, offsetMs: 2500, kind: 'output', data: enc('README.md\r\n') },
   { seq: 7, offsetMs: 4000, kind: 'lifecycle', state: 'exited', exitCode: 0 },
@@ -61,7 +73,15 @@ function setup(durationMs = 4000) {
   const screen = new Screen()
   const clock = new FakeClock()
   const onChange = vi.fn()
-  const player = new Player({ events, durationMs, rows: 24, cols: 80, sink: screen, clock, onChange })
+  const player = new Player({
+    events,
+    durationMs,
+    rows: 24,
+    cols: 80,
+    sink: screen,
+    clock,
+    onChange,
+  })
   return { screen, clock, player, onChange }
 }
 
@@ -93,14 +113,17 @@ describe('playback', () => {
     [0.5, 2400, '$ ls\r\n'],
     [1.5, 1000, '$ ls\r\n'],
     [2, 1250, '$ ls\r\nREADME.md\r\n'],
-  ])('speed %sx covers recording time proportionally', (speed, wallMs, shown) => {
-    const { screen, clock, player } = setup()
-    player.setSpeed(speed as 0.5 | 1.5 | 2)
-    player.play()
-    clock.advance(wallMs)
-    expect(screen.text).toBe(shown)
-    expect(player.positionMs).toBeCloseTo(wallMs * speed, 0)
-  })
+  ])(
+    'speed %sx covers recording time proportionally',
+    (speed, wallMs, shown) => {
+      const { screen, clock, player } = setup()
+      player.setSpeed(speed as 0.5 | 1.5 | 2)
+      player.play()
+      clock.advance(wallMs)
+      expect(screen.text).toBe(shown)
+      expect(player.positionMs).toBeCloseTo(wallMs * speed, 0)
+    },
+  )
 
   test('changing speed mid-play keeps the position continuous', () => {
     const { clock, player } = setup()
@@ -206,7 +229,14 @@ describe('playback', () => {
   test('through an asynchronous terminal, rapid seeks end on exactly the target screen', async () => {
     const terminal = new AsyncTerminal()
     const queue = new RenderQueue(terminal, { maxChunkBytes: 4 })
-    const player = new Player({ events, durationMs: 4000, rows: 24, cols: 80, sink: queue, clock: new FakeClock() })
+    const player = new Player({
+      events,
+      durationMs: 4000,
+      rows: 24,
+      cols: 80,
+      sink: queue,
+      clock: new FakeClock(),
+    })
     for (let i = 0; i < 30; i++) {
       player.seek(4000)
       player.seek(0)
@@ -258,7 +288,10 @@ describe('loadAllEvents', () => {
 
   test('rejects a cursor that does not advance', async () => {
     await expect(
-      loadAllEvents(async () => ({ events: [], next: { afterMs: 0, afterSeq: 0 } })),
+      loadAllEvents(async () => ({
+        events: [],
+        next: { afterMs: 0, afterSeq: 0 },
+      })),
     ).rejects.toThrow(/did not advance/)
   })
 })

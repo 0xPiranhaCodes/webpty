@@ -1,4 +1,11 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 
 import { ApiError, isAbortError } from '../api/client'
 import { useServices } from '../api/services'
@@ -17,12 +24,19 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
       try {
         const session = await api.adminSession(signal)
         setCsrf(session.csrfToken)
-        setState({ status: session.state === 'bootstrap' ? 'bootstrap' : 'authenticated', session })
+        setState({
+          status: session.state === 'bootstrap' ? 'bootstrap' : 'authenticated',
+          session,
+        })
       } catch (error) {
         if (isAbortError(error)) return
         const apiError = toApiError(error)
         setCsrf(undefined)
-        setState(apiError.status === 401 ? { status: 'anonymous' } : { status: 'error', error: apiError })
+        setState(
+          apiError.status === 401
+            ? { status: 'anonymous' }
+            : { status: 'error', error: apiError },
+        )
       }
     },
     [api, setCsrf],
@@ -39,12 +53,18 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
     setCsrf(undefined)
     setState((current) =>
       current.status === 'authenticated' || current.status === 'bootstrap'
-        ? { status: 'anonymous', notice: 'Your session ended. Sign in again to continue.' }
+        ? {
+            status: 'anonymous',
+            notice: 'Your session ended. Sign in again to continue.',
+          }
         : current,
     )
   }, [setCsrf])
 
-  useEffect(() => onAdminSessionEnded(sessionEnded), [onAdminSessionEnded, sessionEnded])
+  useEffect(
+    () => onAdminSessionEnded(sessionEnded),
+    [onAdminSessionEnded, sessionEnded],
+  )
 
   const value = useMemo<AdminAuth>(
     () => ({
@@ -52,7 +72,9 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
       knowsBootstrapPassword: bootstrapPassword.current !== null,
       async login(password) {
         const result = await api.login(password)
-        bootstrapPassword.current = result.passwordChangeRequired ? password : null
+        bootstrapPassword.current = result.passwordChangeRequired
+          ? password
+          : null
         await refresh()
       },
       async changePassword(currentPassword, newPassword) {

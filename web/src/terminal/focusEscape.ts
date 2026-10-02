@@ -1,4 +1,5 @@
-export const editableHint = 'Press Escape, then Tab, to move focus out of the terminal.'
+export const editableHint =
+  'Press Escape, then Tab, to move focus out of the terminal.'
 export const readOnlyHint = 'Tab moves focus past the terminal.'
 
 const modifierKeys = new Set(['Shift', 'Control', 'Alt', 'Meta'])

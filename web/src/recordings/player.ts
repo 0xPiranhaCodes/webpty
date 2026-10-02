@@ -187,7 +187,10 @@ export class Player {
   }
 
   private advanceTo(ms: number) {
-    while (this.index < this.events.length && this.events[this.index].offsetMs <= ms) {
+    while (
+      this.index < this.events.length &&
+      this.events[this.index].offsetMs <= ms
+    ) {
       const event = this.events[this.index++]
       if (event.kind === 'output') this.sink.write(event.data)
       else if (event.kind === 'resize') this.sink.resize(event.cols, event.rows)
@@ -196,10 +199,15 @@ export class Player {
   }
 }
 
-export type PageFetcher = (cursor: PlaybackCursor) => Promise<{ events: PlaybackEvent[]; next: PlaybackCursor | null }>
+export type PageFetcher = (
+  cursor: PlaybackCursor,
+) => Promise<{ events: PlaybackEvent[]; next: PlaybackCursor | null }>
 
 /** Loads every page of a recording, following the server's cursors. */
-export async function loadAllEvents(fetchPage: PageFetcher, onProgress?: (loaded: number) => void): Promise<PlaybackEvent[]> {
+export async function loadAllEvents(
+  fetchPage: PageFetcher,
+  onProgress?: (loaded: number) => void,
+): Promise<PlaybackEvent[]> {
   const all: PlaybackEvent[] = []
   let cursor: PlaybackCursor = { afterMs: 0, afterSeq: 0 }
   for (;;) {
@@ -207,7 +215,10 @@ export async function loadAllEvents(fetchPage: PageFetcher, onProgress?: (loaded
     all.push(...page.events)
     onProgress?.(all.length)
     if (!page.next) return all
-    if (page.next.afterSeq <= cursor.afterSeq && page.next.afterMs <= cursor.afterMs) {
+    if (
+      page.next.afterSeq <= cursor.afterSeq &&
+      page.next.afterMs <= cursor.afterMs
+    ) {
       throw new Error('recording cursor did not advance')
     }
     cursor = page.next

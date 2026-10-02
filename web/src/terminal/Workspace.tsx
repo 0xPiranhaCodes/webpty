@@ -1,11 +1,22 @@
 import { Eye, Smartphone, TriangleAlert } from 'lucide-react'
-import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
+import {
+  type ReactNode,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 
 import type { Permissions } from '../api/types'
 import { RoleBadge } from '../components/StatusBadge'
 import { SignalSpine, type SpineState } from '../components/SignalSpine'
 import { shortId } from '../lib/format'
-import { type ConnectionState, type ProbeResult, TerminalConnection } from './connection'
+import {
+  type ConnectionState,
+  type ProbeResult,
+  TerminalConnection,
+} from './connection'
 import { describeState } from './describeState'
 import { useIsPhone, useTerminalEnvironment } from './environmentContext'
 import { createFocusEscape, editableHint, readOnlyHint } from './focusEscape'
@@ -33,9 +44,12 @@ interface Notice {
 }
 
 const noticeCopy: Record<string, string> = {
-  replay_gap: 'Some output was missed while reconnecting. The screen was redrawn from what the server still had.',
-  input_overflow: 'Input arrived faster than the terminal could take it. Some keystrokes may be lost.',
-  slow_consumer: 'This connection fell behind the terminal output and was restarted.',
+  replay_gap:
+    'Some output was missed while reconnecting. The screen was redrawn from what the server still had.',
+  input_overflow:
+    'Input arrived faster than the terminal could take it. Some keystrokes may be lost.',
+  slow_consumer:
+    'This connection fell behind the terminal output and was restarted.',
 }
 
 function spineFor(state: ConnectionState, recording: boolean): SpineState {
@@ -51,16 +65,33 @@ function spineFor(state: ConnectionState, recording: boolean): SpineState {
   }
 }
 
-export function Workspace({ terminalId, initialSize, recordingId, probe, header, actions, rail, onState }: WorkspaceProps) {
+export function Workspace({
+  terminalId,
+  initialSize,
+  recordingId,
+  probe,
+  header,
+  actions,
+  rail,
+  onState,
+}: WorkspaceProps) {
   const env = useTerminalEnvironment()
   const phone = useIsPhone()
   const host = useRef<HTMLDivElement>(null)
-  const [state, setState] = useState<ConnectionState>({ kind: 'connecting', attempt: 0 })
+  const [state, setState] = useState<ConnectionState>({
+    kind: 'connecting',
+    attempt: 0,
+  })
   const [role, setRole] = useState<Participant['role'] | null>(null)
-  const [permissions, setPermissions] = useState<Permissions>({ input: false, resize: false })
+  const [permissions, setPermissions] = useState<Permissions>({
+    input: false,
+    resize: false,
+  })
   const [participants, setParticipants] = useState<Participant[]>([])
   const [selfId, setSelfId] = useState<string | null>(null)
-  const [recording, setRecording] = useState<RecordingStatusMessage | null>(null)
+  const [recording, setRecording] = useState<RecordingStatusMessage | null>(
+    null,
+  )
   const [notices, setNotices] = useState<Notice[]>([])
   const phoneRef = useRef(phone)
   const probeRef = useRef(probe)
@@ -110,7 +141,10 @@ export function Workspace({ terminalId, initialSize, recordingId, probe, header,
       terminalId,
       origin: env.origin,
       socketFactory: env.socketFactory,
-      probe: () => (probeRef.current ? probeRef.current() : Promise.resolve('retry' as const)),
+      probe: () =>
+        probeRef.current
+          ? probeRef.current()
+          : Promise.resolve('retry' as const),
       handlers: {
         onState: (next) => {
           setState(next)
@@ -118,7 +152,10 @@ export function Workspace({ terminalId, initialSize, recordingId, probe, header,
           if (next.kind !== 'live') setEditable(false)
         },
         onReady: (message, fresh) => {
-          serverSize = { rows: message.session.rows, cols: message.session.cols }
+          serverSize = {
+            rows: message.session.rows,
+            cols: message.session.cols,
+          }
           // A fresh stream redraws from scratch; output from the old one must not land after it.
           if (fresh) screen.reset(serverSize.cols, serverSize.rows)
           setRole(message.role)
@@ -141,7 +178,11 @@ export function Workspace({ terminalId, initialSize, recordingId, probe, header,
           setRecording(message)
           if (message.status !== 'recording') notify('warning', message.message)
         },
-        onNotice: (code, message) => notify(code === 'replay_gap' ? 'info' : 'warning', noticeCopy[code] ?? message.message),
+        onNotice: (code, message) =>
+          notify(
+            code === 'replay_gap' ? 'info' : 'warning',
+            noticeCopy[code] ?? message.message,
+          ),
       },
     })
     connectionRef.current = connection
@@ -154,7 +195,9 @@ export function Workspace({ terminalId, initialSize, recordingId, probe, header,
       typeof ResizeObserver === 'function'
         ? new ResizeObserver(() => {
             cancelAnimationFrame(frame)
-            frame = requestAnimationFrame(() => connection.state.kind === 'live' && fitAndSend())
+            frame = requestAnimationFrame(
+              () => connection.state.kind === 'live' && fitAndSend(),
+            )
           })
         : null
     observer?.observe(host.current)
@@ -178,18 +221,26 @@ export function Workspace({ terminalId, initialSize, recordingId, probe, header,
     const xterm = xtermRef.current
     const connection = connectionRef.current
     if (!xterm || !connection) return
-    editableRef.current = connection.permissions.input && connection.state.kind === 'live' && !phone
+    editableRef.current =
+      connection.permissions.input && connection.state.kind === 'live' && !phone
     xterm.setInputEnabled(editableRef.current)
   }, [phone])
 
-  const knownRecording = recording ? recording.status === 'recording' : !!recordingId
-  const isRecording = recordingId !== undefined && knownRecording && state.kind !== 'ended'
+  const knownRecording = recording
+    ? recording.status === 'recording'
+    : !!recordingId
+  const isRecording =
+    recordingId !== undefined && knownRecording && state.kind !== 'ended'
   const canType = permissions.input && state.kind === 'live'
   const ended = state.kind === 'ended'
 
   const sortedParticipants = useMemo(() => {
     const order = { owner: 0, editor: 1, viewer: 2 }
-    return [...participants].sort((a, b) => order[a.role] - order[b.role] || Number(b.id === selfId) - Number(a.id === selfId))
+    return [...participants].sort(
+      (a, b) =>
+        order[a.role] - order[b.role] ||
+        Number(b.id === selfId) - Number(a.id === selfId),
+    )
   }, [participants, selfId])
 
   return (
@@ -197,7 +248,12 @@ export function Workspace({ terminalId, initialSize, recordingId, probe, header,
       <SignalSpine state={spineFor(state, isRecording)} />
       <header className="workspace__bar">
         <div className="workspace__title">{header}</div>
-        <p className="readout" data-testid="readout" role="status" aria-live="polite">
+        <p
+          className="readout"
+          data-testid="readout"
+          role="status"
+          aria-live="polite"
+        >
           <span className="readout__state">{describeState(state)}</span>
           {isRecording && <span className="readout__recording">Recording</span>}
         </p>
@@ -207,15 +263,22 @@ export function Workspace({ terminalId, initialSize, recordingId, probe, header,
       <section className="workspace__terminal" aria-label="Terminal">
         {state.kind === 'live' && role === 'viewer' && (
           <p className="terminal-note">
-            <Eye aria-hidden size={14} /> You are viewing. Only the owner and the editor can type.
+            <Eye aria-hidden size={14} /> You are viewing. Only the owner and
+            the editor can type.
           </p>
         )}
         {state.kind === 'live' && role !== 'viewer' && phone && (
           <p className="terminal-note">
-            <Smartphone aria-hidden size={14} /> Typing is off on phone-sized screens. You can still watch, share, and end this terminal.
+            <Smartphone aria-hidden size={14} /> Typing is off on phone-sized
+            screens. You can still watch, share, and end this terminal.
           </p>
         )}
-        <div ref={host} className="workspace__screen" data-input={canType && !phone ? 'on' : 'off'} data-ended={ended || undefined} />
+        <div
+          ref={host}
+          className="workspace__screen"
+          data-input={canType && !phone ? 'on' : 'off'}
+          data-ended={ended || undefined}
+        />
         <p id={hintId} className="terminal-hint">
           {canType && !phone ? editableHint : readOnlyHint}
         </p>
@@ -233,7 +296,11 @@ export function Workspace({ terminalId, initialSize, recordingId, probe, header,
         <section className="rail-section" aria-labelledby="people-heading">
           <h2 id="people-heading">People</h2>
           {sortedParticipants.length === 0 ? (
-            <p className="muted">{state.kind === 'live' ? 'Waiting for the participant list.' : 'Nobody is connected.'}</p>
+            <p className="muted">
+              {state.kind === 'live'
+                ? 'Waiting for the participant list.'
+                : 'Nobody is connected.'}
+            </p>
           ) : (
             <ul className="people" aria-label="People in this terminal">
               {sortedParticipants.map((p) => (
@@ -242,7 +309,11 @@ export function Workspace({ terminalId, initialSize, recordingId, probe, header,
                     {p.id === selfId ? (
                       'You'
                     ) : p.role === 'owner' ? (
-                      role === 'owner' ? 'You, in another tab or device' : 'Administrator'
+                      role === 'owner' ? (
+                        'You, in another tab or device'
+                      ) : (
+                        'Administrator'
+                      )
                     ) : (
                       <>
                         Guest <span className="mono">{shortId(p.id)}</span>

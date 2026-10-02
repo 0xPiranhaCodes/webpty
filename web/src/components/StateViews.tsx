@@ -13,7 +13,15 @@ export function Loading({ label }: { label: string }) {
   )
 }
 
-export function EmptyState({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
+export function EmptyState({
+  title,
+  children,
+  action,
+}: {
+  title: string
+  children?: ReactNode
+  action?: ReactNode
+}) {
   return (
     <div className="state state--empty">
       <h3>{title}</h3>
@@ -23,7 +31,17 @@ export function EmptyState({ title, children, action }: { title: string; childre
   )
 }
 
-export function ErrorState({ error, subject, onRetry, children }: { error: ApiError; subject?: string; onRetry?: () => void; children?: ReactNode }) {
+export function ErrorState({
+  error,
+  subject,
+  onRetry,
+  children,
+}: {
+  error: ApiError
+  subject?: string
+  onRetry?: () => void
+  children?: ReactNode
+}) {
   const copy = describeError(error, subject)
   const Icon = error.code === 'offline' ? WifiOff : CircleAlert
   return (

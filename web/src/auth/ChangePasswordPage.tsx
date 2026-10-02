@@ -10,7 +10,12 @@ import { passwordRules, validateNewPassword } from './password'
 
 export function ChangePasswordPage() {
   const auth = useAdminAuth()
-  const ids = { current: useId(), next: useId(), confirm: useId(), rules: useId() }
+  const ids = {
+    current: useId(),
+    next: useId(),
+    confirm: useId(),
+    rules: useId(),
+  }
   const askCurrent = !auth.knowsBootstrapPassword
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
@@ -31,8 +36,12 @@ export function ChangePasswordPage() {
       await auth.changePassword(askCurrent ? current : undefined, next)
     } catch (e) {
       const apiError = toApiError(e)
-      if (apiError.code === 'invalid_current_password') setError('The current password is not correct.')
-      else if (apiError.status === 400) setError('The server rejected this password. Use at least 12 characters, not the default.')
+      if (apiError.code === 'invalid_current_password')
+        setError('The current password is not correct.')
+      else if (apiError.status === 400)
+        setError(
+          'The server rejected this password. Use at least 12 characters, not the default.',
+        )
       else {
         const copy = describeError(apiError)
         setError(`${copy.title} ${copy.body}`)
@@ -45,11 +54,19 @@ export function ChangePasswordPage() {
     <AuthFrame>
       <h1>Set the administrator password</h1>
       <p className="muted lede">
-        webpty is still using its initial password. Replace it before managing terminals; anyone who knows the default could
-        otherwise run commands on this machine.
+        webpty is still using its initial password. Replace it before managing
+        terminals; anyone who knows the default could otherwise run commands on
+        this machine.
       </p>
       <form className="form auth-form" onSubmit={submit} noValidate>
-        <input type="text" name="username" autoComplete="username" value="webpty admin" readOnly hidden />
+        <input
+          type="text"
+          name="username"
+          autoComplete="username"
+          value="webpty admin"
+          readOnly
+          hidden
+        />
         {askCurrent && (
           <div className="field">
             <label htmlFor={ids.current}>Current password</label>
@@ -93,9 +110,15 @@ export function ChangePasswordPage() {
         <ul className="rules" id={ids.rules} aria-label="Password requirements">
           {passwordRules(next, confirm).map((rule) => (
             <li key={rule.label} data-met={rule.met}>
-              {rule.met ? <Check aria-hidden size={14} /> : <Minus aria-hidden size={14} />}
+              {rule.met ? (
+                <Check aria-hidden size={14} />
+              ) : (
+                <Minus aria-hidden size={14} />
+              )}
               <span>{rule.label}</span>
-              <span className="visually-hidden">{rule.met ? ' (met)' : ' (not met)'}</span>
+              <span className="visually-hidden">
+                {rule.met ? ' (met)' : ' (not met)'}
+              </span>
             </li>
           ))}
         </ul>
@@ -104,7 +127,11 @@ export function ChangePasswordPage() {
           <button type="submit" className="btn btn--primary" disabled={pending}>
             {pending ? 'Saving…' : 'Save password'}
           </button>
-          <button type="button" className="btn btn--quiet" onClick={() => void auth.logout()}>
+          <button
+            type="button"
+            className="btn btn--quiet"
+            onClick={() => void auth.logout()}
+          >
             Sign out
           </button>
         </div>

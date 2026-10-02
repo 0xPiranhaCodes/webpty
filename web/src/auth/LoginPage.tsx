@@ -26,8 +26,10 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const serverError = auth.state.status === 'error' ? describeError(auth.state.error) : null
-  const notice = auth.state.status === 'anonymous' ? auth.state.notice : undefined
+  const serverError =
+    auth.state.status === 'error' ? describeError(auth.state.error) : null
+  const notice =
+    auth.state.status === 'anonymous' ? auth.state.notice : undefined
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -46,15 +48,26 @@ export function LoginPage() {
   return (
     <AuthFrame>
       <h1>Sign in</h1>
-      <p className="muted lede">Administer terminals, shared links, and recordings on this machine.</p>
+      <p className="muted lede">
+        Administer terminals, shared links, and recordings on this machine.
+      </p>
       {notice && (
         <p className="notice" role="status">
           {notice}
         </p>
       )}
-      {serverError && <InlineError>{`${serverError.title} ${serverError.body}`}</InlineError>}
+      {serverError && (
+        <InlineError>{`${serverError.title} ${serverError.body}`}</InlineError>
+      )}
       <form className="form auth-form" onSubmit={submit} noValidate>
-        <input type="text" name="username" autoComplete="username" value="webpty admin" readOnly hidden />
+        <input
+          type="text"
+          name="username"
+          autoComplete="username"
+          value="webpty admin"
+          readOnly
+          hidden
+        />
         <div className="field">
           <label htmlFor={id}>Administrator password</label>
           <input
@@ -68,11 +81,16 @@ export function LoginPage() {
             autoFocus
           />
           <p className="field-hint">
-            First run? Use the initial password <code>CHANGEME</code>. You will replace it next.
+            First run? Use the initial password <code>CHANGEME</code>. You will
+            replace it next.
           </p>
         </div>
         {error && <InlineError>{error}</InlineError>}
-        <button type="submit" className="btn btn--primary" disabled={pending || !password}>
+        <button
+          type="submit"
+          className="btn btn--primary"
+          disabled={pending || !password}
+        >
           {pending ? 'Signing in…' : 'Sign in'}
         </button>
       </form>

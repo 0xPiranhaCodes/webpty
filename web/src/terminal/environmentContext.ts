@@ -12,9 +12,12 @@ export interface TerminalEnvironment {
 }
 
 /** Phones can watch, share, and end sessions but not type into them. */
-export const phoneQuery = '(max-width: 640px), (pointer: coarse) and (max-width: 900px) and (max-height: 500px)'
+export const phoneQuery =
+  '(max-width: 640px), (pointer: coarse) and (max-width: 900px) and (max-height: 500px)'
 
-export const EnvironmentContext = createContext<TerminalEnvironment>({ createXterm })
+export const EnvironmentContext = createContext<TerminalEnvironment>({
+  createXterm,
+})
 
 export const useTerminalEnvironment = () => useContext(EnvironmentContext)
 
@@ -30,7 +33,9 @@ function subscribe(query: string) {
 export function useMediaQuery(query: string): boolean {
   return useSyncExternalStore(
     subscribe(query),
-    () => typeof window.matchMedia === 'function' && window.matchMedia(query).matches,
+    () =>
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia(query).matches,
     () => false,
   )
 }

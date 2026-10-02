@@ -1,21 +1,42 @@
-import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test'
+import {
+  expect,
+  test,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from '@playwright/test'
 
-import { collectConsoleProblems, focused, readout, screenRows, signIn, startTerminal, tabKey } from './support'
+import {
+  collectConsoleProblems,
+  focused,
+  readout,
+  screenRows,
+  signIn,
+  startTerminal,
+  tabKey,
+} from './support'
 
 // Everything after setup is driven by the keyboard alone.
 test.describe.configure({ mode: 'serial' })
 
 const problems: string[] = []
 
-async function tabTo(page: Page, target: string | RegExp, { back = false, max = 40 } = {}) {
+async function tabTo(
+  page: Page,
+  target: string | RegExp,
+  { back = false, max = 40 } = {},
+) {
   const seen: string[] = []
   for (let i = 0; i < max; i++) {
     await page.keyboard.press(tabKey(back))
     const now = await focused(page)
     seen.push(now)
-    if (typeof target === 'string' ? now === target : target.test(now)) return seen
+    if (typeof target === 'string' ? now === target : target.test(now))
+      return seen
   }
-  throw new Error(`focus never reached ${target}; went through:\n${seen.join('\n')}`)
+  throw new Error(
+    `focus never reached ${target}; went through:\n${seen.join('\n')}`,
+  )
 }
 
 async function describedBy(page: Page) {
@@ -55,8 +76,14 @@ test.afterAll(async () => {
 
 test('owner: Tab stays in the terminal, Escape then Tab leaves it, and sharing works by keyboard', async () => {
   await owner.locator('.xterm-helper-textarea').focus()
-  await expect(owner.getByText('Press Escape, then Tab, to move focus out of the terminal.')).toBeVisible()
-  expect(await describedBy(owner)).toContain('Press Escape, then Tab, to move focus out of the terminal.')
+  await expect(
+    owner.getByText(
+      'Press Escape, then Tab, to move focus out of the terminal.',
+    ),
+  ).toBeVisible()
+  expect(await describedBy(owner)).toContain(
+    'Press Escape, then Tab, to move focus out of the terminal.',
+  )
 
   await owner.keyboard.type('echo kb-owner')
   await owner.keyboard.press(tabKey())
@@ -88,14 +115,23 @@ test('owner: Tab stays in the terminal, Escape then Tab leaves it, and sharing w
   await tabTo(owner, 'button:Terminate', { back: true })
 })
 
-test('viewer: Tab moves straight through the read-only terminal', async ({ browser }) => {
-  const viewer = await guest(browser, (globalThis as { viewerUrl?: string }).viewerUrl!)
+test('viewer: Tab moves straight through the read-only terminal', async ({
+  browser,
+}) => {
+  const viewer = await guest(
+    browser,
+    (globalThis as { viewerUrl?: string }).viewerUrl!,
+  )
   await expect(viewer.page.getByText('You joined as a viewer.')).toBeVisible()
   await expect(readout(viewer.page)).toContainText('Live')
 
   await tabTo(viewer.page, 'terminal')
-  await expect(viewer.page.getByText('Tab moves focus past the terminal.')).toBeVisible()
-  expect(await describedBy(viewer.page)).toContain('Tab moves focus past the terminal.')
+  await expect(
+    viewer.page.getByText('Tab moves focus past the terminal.'),
+  ).toBeVisible()
+  expect(await describedBy(viewer.page)).toContain(
+    'Tab moves focus past the terminal.',
+  )
   await viewer.page.keyboard.press(tabKey())
   expect(await focused(viewer.page)).not.toBe('terminal')
   await tabTo(viewer.page, 'terminal', { back: true })
@@ -127,16 +163,29 @@ test('playback: transport controls are reachable and the terminal is skipped', a
   await owner.goto('/admin/recordings')
   await expect(async () => {
     await owner.reload()
-    await expect(owner.getByRole('table', { name: 'Recordings' }).locator('tbody tr').first()).toContainText('Complete', { timeout: 1000 })
+    await expect(
+      owner
+        .getByRole('table', { name: 'Recordings' })
+        .locator('tbody tr')
+        .first(),
+    ).toContainText('Complete', { timeout: 1000 })
   }).toPass({ timeout: 30_000 })
-  await owner.getByRole('link', { name: /^Play recording/ }).first().focus()
+  await owner
+    .getByRole('link', { name: /^Play recording/ })
+    .first()
+    .focus()
   await owner.keyboard.press('Enter')
   await expect(readout(owner)).toContainText('Playback')
   await expect(owner.getByRole('slider', { name: 'Position' })).toBeVisible()
 
   const order = await tabTo(owner, 'button:Play')
   expect(order).not.toContain('terminal')
-  expect(order).toEqual(expect.arrayContaining(['a:Export as asciicast', 'button:Delete recording']))
+  expect(order).toEqual(
+    expect.arrayContaining([
+      'a:Export as asciicast',
+      'button:Delete recording',
+    ]),
+  )
   await owner.keyboard.press('Space')
   await expect(readout(owner)).toContainText('playing')
   await owner.keyboard.press('Space')

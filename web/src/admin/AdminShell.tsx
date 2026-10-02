@@ -24,7 +24,8 @@ function useRunningCount(): number | null {
     const controller = new AbortController()
     const load = () =>
       api.listTerminals(controller.signal).then(
-        (terminals) => setCount(terminals.filter((t) => t.state === 'running').length),
+        (terminals) =>
+          setCount(terminals.filter((t) => t.state === 'running').length),
         () => {},
       )
     void load()

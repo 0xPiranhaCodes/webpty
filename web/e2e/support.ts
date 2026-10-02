@@ -22,10 +22,22 @@ export async function signIn(page: Page) {
     await page.getByLabel('Administrator password').fill(password)
     await page.getByRole('button', { name: 'Sign in' }).click()
     return Promise.race([
-      page.getByRole('navigation', { name: 'Admin' }).waitFor().then(() => 'signed-in' as const),
-      page.getByLabel('New password', { exact: true }).waitFor().then(() => 'change-password' as const),
-      page.getByText('That password is not correct.').waitFor().then(() => 'wrong' as const),
-      page.getByText(/^Too many attempts/).waitFor().then(() => 'throttled' as const),
+      page
+        .getByRole('navigation', { name: 'Admin' })
+        .waitFor()
+        .then(() => 'signed-in' as const),
+      page
+        .getByLabel('New password', { exact: true })
+        .waitFor()
+        .then(() => 'change-password' as const),
+      page
+        .getByText('That password is not correct.')
+        .waitFor()
+        .then(() => 'wrong' as const),
+      page
+        .getByText(/^Too many attempts/)
+        .waitFor()
+        .then(() => 'throttled' as const),
     ])
   }
   const until = async (password: string) => {
@@ -67,15 +79,26 @@ export async function settled(page: Page, timeout = 30_000) {
   return previous!
 }
 
-export function collectConsoleProblems(page: Page, sink: string[], who: string) {
+export function collectConsoleProblems(
+  page: Page,
+  sink: string[],
+  who: string,
+) {
   // WebKit reports a same-origin request cancelled by navigation this way.
   const cancelledByNavigation = (text: string) => {
     const cancelled = /(https?:\/\/\S+) due to access control checks/.exec(text)
-    return cancelled !== null && new URL(cancelled[1]).origin === new URL(page.url()).origin
+    return (
+      cancelled !== null &&
+      new URL(cancelled[1]).origin === new URL(page.url()).origin
+    )
   }
   page.on('console', (message) => {
     if (message.type() !== 'error' && message.type() !== 'warning') return
-    if (/status of 401/.test(message.text()) && /\/api\/v1\/(admin|access)\/session$/.test(message.location().url)) return
+    if (
+      /status of 401/.test(message.text()) &&
+      /\/api\/v1\/(admin|access)\/session$/.test(message.location().url)
+    )
+      return
     if (cancelledByNavigation(message.text())) return
     sink.push(`${who}: ${message.text()} (${message.location().url})`)
   })
@@ -94,13 +117,23 @@ export async function focused(page: Page) {
     const el = document.activeElement as HTMLElement | null
     if (!el) return ''
     if (el.classList.contains('xterm-helper-textarea')) return 'terminal'
-    const label = el.getAttribute('aria-label') ?? ((el as HTMLInputElement).labels?.[0]?.textContent ?? el.textContent ?? '').trim()
+    const label =
+      el.getAttribute('aria-label') ??
+      (
+        (el as HTMLInputElement).labels?.[0]?.textContent ??
+        el.textContent ??
+        ''
+      ).trim()
     return `${el.tagName.toLowerCase()}:${label}`
   })
 }
 
 /** Creates a share link from the owner workspace rail and returns its URL. */
-export async function createLink(page: Page, role: 'Viewer' | 'Editor', label: string) {
+export async function createLink(
+  page: Page,
+  role: 'Viewer' | 'Editor',
+  label: string,
+) {
   const rail = page.getByRole('complementary', { name: 'Terminal details' })
   await rail.getByLabel(role, { exact: true }).check()
   await rail.getByLabel('Label').fill(label)
@@ -115,9 +148,14 @@ const wcagTags = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']
 /** Runs axe's WCAG 2.2 A/AA rules, including color contrast, and fails on any violation. */
 export async function expectAccessible(page: Page, where: string) {
   const results = await new AxeBuilder({ page }).withTags(wcagTags).analyze()
-  const violations = results.violations.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(' ')).join(' | ')}`)
+  const violations = results.violations.map(
+    (v) =>
+      `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(' ')).join(' | ')}`,
+  )
   expect(violations, `${where}: axe violations`).toEqual([])
-  const contrast = [...results.passes, ...results.incomplete].find((r) => r.id === 'color-contrast')
+  const contrast = [...results.passes, ...results.incomplete].find(
+    (r) => r.id === 'color-contrast',
+  )
   expect(contrast, `${where}: color contrast was evaluated`).toBeDefined()
   return results
 }
@@ -131,13 +169,25 @@ export async function focusStop(page: Page) {
     const el = document.activeElement as HTMLElement | null
     if (!el || el === document.body) return { name: 'body', visible: false }
     const terminal = el.classList.contains('xterm-helper-textarea')
-    const label = el.getAttribute('aria-label') ?? ((el as HTMLInputElement).labels?.[0]?.textContent ?? el.textContent ?? '').trim()
-    const name = terminal ? 'terminal' : `${el.tagName.toLowerCase()}:${label.slice(0, 60)}`
+    const label =
+      el.getAttribute('aria-label') ??
+      (
+        (el as HTMLInputElement).labels?.[0]?.textContent ??
+        el.textContent ??
+        ''
+      ).trim()
+    const name = terminal
+      ? 'terminal'
+      : `${el.tagName.toLowerCase()}:${label.slice(0, 60)}`
     // An outline on a transparent element (such as xterm's hidden input) cannot be seen.
     const outlined = (node: Element) => {
       const style = getComputedStyle(node)
       if (parseFloat(style.opacity) === 0) return false
-      return style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) >= 2 && style.outlineColor !== 'rgba(0, 0, 0, 0)'
+      return (
+        style.outlineStyle !== 'none' &&
+        parseFloat(style.outlineWidth) >= 2 &&
+        style.outlineColor !== 'rgba(0, 0, 0, 0)'
+      )
     }
     let node: Element | null = el
     for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
@@ -153,7 +203,8 @@ export async function focusStop(page: Page) {
  * everything (as in Safari).
  */
 export function tabKey(back = false) {
-  const option = test.info().project.name === 'webkit' && process.platform === 'darwin'
+  const option =
+    test.info().project.name === 'webkit' && process.platform === 'darwin'
   return `${option ? 'Alt+' : ''}${back ? 'Shift+' : ''}Tab`
 }
 
@@ -172,23 +223,40 @@ export async function tabTo(page: Page, target: RegExp, maxStops = 60) {
     expect(stop.visible, `focus is visible on ${stop.name}`).toBe(true)
     if (target.test(stop.name)) return stops
   }
-  throw new Error(`never reached ${target} by Tab; stops were: ${stops.join(', ')}`)
+  throw new Error(
+    `never reached ${target} by Tab; stops were: ${stops.join(', ')}`,
+  )
 }
 
 /** Fails if anything on the page still moves when the user asked for reduced motion. */
 export async function expectNoMotion(page: Page, where: string) {
   const moving = await page.evaluate(() => {
-    const seconds = (value: string) => Math.max(...value.split(',').map((v) => parseFloat(v) * (v.trim().endsWith('ms') ? 0.001 : 1)))
+    const seconds = (value: string) =>
+      Math.max(
+        ...value
+          .split(',')
+          .map((v) => parseFloat(v) * (v.trim().endsWith('ms') ? 0.001 : 1)),
+      )
     const found: string[] = []
     for (const el of Array.from(document.querySelectorAll('*'))) {
       const style = getComputedStyle(el)
-      const transition = seconds(style.transitionDuration) > 0.01 && style.transitionProperty !== 'none'
-      const animation = style.animationName !== 'none' && seconds(style.animationDuration) > 0.01
-      if (transition || animation) found.push(`${el.tagName.toLowerCase()}.${String(el.className).split(' ')[0]}`)
+      const transition =
+        seconds(style.transitionDuration) > 0.01 &&
+        style.transitionProperty !== 'none'
+      const animation =
+        style.animationName !== 'none' &&
+        seconds(style.animationDuration) > 0.01
+      if (transition || animation)
+        found.push(
+          `${el.tagName.toLowerCase()}.${String(el.className).split(' ')[0]}`,
+        )
     }
     return found
   })
-  expect(moving, `${where}: elements still animating under reduced motion`).toEqual([])
+  expect(
+    moving,
+    `${where}: elements still animating under reduced motion`,
+  ).toEqual([])
 }
 
 /**
@@ -197,18 +265,24 @@ export async function expectNoMotion(page: Page, where: string) {
  * set aside for the one write and restored in the same transaction.
  */
 export function damageRecording(baseURL: string, recordingId: string) {
-  const db = new DatabaseSync(`${dataDir(Number(new URL(baseURL).port))}/webpty.db`)
+  const db = new DatabaseSync(
+    `${dataDir(Number(new URL(baseURL).port))}/webpty.db`,
+  )
   try {
     db.exec('PRAGMA busy_timeout = 5000')
-    const trigger = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'recording_chunks_are_immutable'").get() as
-      | { sql: string }
-      | undefined
+    const trigger = db
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'recording_chunks_are_immutable'",
+      )
+      .get() as { sql: string } | undefined
     expect(trigger, 'the immutability trigger exists').toBeDefined()
     db.exec('BEGIN IMMEDIATE')
     try {
       db.exec('DROP TRIGGER recording_chunks_are_immutable')
       const result = db
-        .prepare('UPDATE recording_chunks SET checksum = zeroblob(32) WHERE recording_id = (SELECT id FROM recordings WHERE public_id = ?)')
+        .prepare(
+          'UPDATE recording_chunks SET checksum = zeroblob(32) WHERE recording_id = (SELECT id FROM recordings WHERE public_id = ?)',
+        )
         .run(recordingId)
       expect(Number(result.changes), 'chunks damaged').toBeGreaterThan(0)
       db.exec(trigger!.sql)

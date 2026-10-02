@@ -20,8 +20,14 @@ export function SessionWorkspacePage() {
   const data = useAsync(`workspace:${id}`, async (signal) => {
     const terminal = await api.getTerminal(id, signal)
     const live = terminal.state === 'running' || terminal.state === 'starting'
-    const recordings = live ? await api.listRecordings({ terminalId: id, limit: 5 }, signal).catch(() => []) : []
-    const active = recordings.find((r) => r.terminalId === id && r.status === 'recording')
+    const recordings = live
+      ? await api
+          .listRecordings({ terminalId: id, limit: 5 }, signal)
+          .catch(() => [])
+      : []
+    const active = recordings.find(
+      (r) => r.terminalId === id && r.status === 'recording',
+    )
     return { terminal, recordingId: active?.id ?? null }
   })
   const [terminating, setTerminating] = useState(false)
@@ -32,11 +38,20 @@ export function SessionWorkspacePage() {
     </Link>
   )
 
-  if (data.status === 'loading' && !data.data) return <FramedState back={back}><Loading label="Loading terminal" /></FramedState>
+  if (data.status === 'loading' && !data.data)
+    return (
+      <FramedState back={back}>
+        <Loading label="Loading terminal" />
+      </FramedState>
+    )
   if (data.status === 'error' && !data.data)
     return (
       <FramedState back={back}>
-        <ErrorState error={data.error} subject="terminal" onRetry={data.reload} />
+        <ErrorState
+          error={data.error}
+          subject="terminal"
+          onRetry={data.reload}
+        />
       </FramedState>
     )
   const { terminal, recordingId } = data.data!
@@ -46,12 +61,18 @@ export function SessionWorkspacePage() {
         <EmptyState
           title="This terminal has ended."
           action={
-            <Link className="btn" to={`/admin/recordings?terminal=${encodeURIComponent(terminal.id)}`}>
+            <Link
+              className="btn"
+              to={`/admin/recordings?terminal=${encodeURIComponent(terminal.id)}`}
+            >
               View its recordings
             </Link>
           }
         >
-          <span className="mono">{commandLine(terminal.command, terminal.args)}</span> is no longer running.
+          <span className="mono">
+            {commandLine(terminal.command, terminal.args)}
+          </span>{' '}
+          is no longer running.
         </EmptyState>
       </FramedState>
     )
@@ -60,13 +81,16 @@ export function SessionWorkspacePage() {
   const probe = async (): Promise<ProbeResult> => {
     try {
       const current = await api.getTerminal(id)
-      return current.state === 'running' || current.state === 'starting' ? 'retry' : { ended: 'exited' }
+      return current.state === 'running' || current.state === 'starting'
+        ? 'retry'
+        : { ended: 'exited' }
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         auth.sessionEnded()
         return { ended: 'unauthorized' }
       }
-      if (e instanceof ApiError && e.status === 404) return { ended: 'not_found' }
+      if (e instanceof ApiError && e.status === 404)
+        return { ended: 'not_found' }
       return 'retry'
     }
   }
@@ -81,22 +105,40 @@ export function SessionWorkspacePage() {
         header={
           <>
             {back}
-            <h1 className="workspace__command mono">{commandLine(terminal.command, terminal.args)}</h1>
+            <h1 className="workspace__command mono">
+              {commandLine(terminal.command, terminal.args)}
+            </h1>
           </>
         }
         actions={
-          <button type="button" className="btn btn--destructive-text" onClick={() => setTerminating(true)}>
+          <button
+            type="button"
+            className="btn btn--destructive-text"
+            onClick={() => setTerminating(true)}
+          >
             <Square aria-hidden size={12} /> Terminate
           </button>
         }
         rail={<GrantsPanel terminalId={terminal.id} compact />}
       />
-      {terminating && <TerminateDialog terminal={terminal} onDone={() => setTerminating(false)} onCancel={() => setTerminating(false)} />}
+      {terminating && (
+        <TerminateDialog
+          terminal={terminal}
+          onDone={() => setTerminating(false)}
+          onCancel={() => setTerminating(false)}
+        />
+      )}
     </>
   )
 }
 
-function FramedState({ back, children }: { back: React.ReactNode; children: React.ReactNode }) {
+function FramedState({
+  back,
+  children,
+}: {
+  back: React.ReactNode
+  children: React.ReactNode
+}) {
   return (
     <div className="framed">
       <div className="spine" data-state="idle" aria-hidden="true">

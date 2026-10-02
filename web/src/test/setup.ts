@@ -7,7 +7,11 @@ import { afterEach } from 'vitest'
 // jsdom's and are undefined without --localstorage-file.
 const dom = (globalThis as { jsdom?: { window: Window } }).jsdom?.window
 for (const name of ['localStorage', 'sessionStorage'] as const) {
-  if (!globalThis[name] && dom) Object.defineProperty(globalThis, name, { configurable: true, value: dom[name] })
+  if (!globalThis[name] && dom)
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      value: dom[name],
+    })
 }
 
 afterEach(() => {

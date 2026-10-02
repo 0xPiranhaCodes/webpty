@@ -23,7 +23,9 @@ describe('focus escape', () => {
   test('Option+Tab, the Safari focus key, moves focus the same way Tab does', () => {
     const readOnly = handler(false)
     expect(readOnly.handle(key('Tab', { altKey: true }))).toBe(false)
-    expect(readOnly.handle(key('Tab', { altKey: true, shiftKey: true }))).toBe(false)
+    expect(readOnly.handle(key('Tab', { altKey: true, shiftKey: true }))).toBe(
+      false,
+    )
 
     const editable = handler(true)
     expect(editable.handle(key('Tab', { altKey: true }))).toBe(true)

@@ -128,7 +128,8 @@ export class TerminalConnection {
   }
 
   sendInput(data: string): boolean {
-    if (!this.currentPermissions.input || !this.isLive() || data === '') return false
+    if (!this.currentPermissions.input || !this.isLive() || data === '')
+      return false
     this.socket!.send(encodeInput(data))
     return true
   }
@@ -150,13 +151,17 @@ export class TerminalConnection {
 
   private url() {
     const origin = this.options.origin ?? window.location.origin
-    const base = origin.replace(/^http/, 'ws') + `/api/v1/terminals/${encodeURIComponent(this.options.terminalId)}/ws`
+    const base =
+      origin.replace(/^http/, 'ws') +
+      `/api/v1/terminals/${encodeURIComponent(this.options.terminalId)}/ws`
     return this.lastSeq === null ? base : `${base}?afterSeq=${this.lastSeq}`
   }
 
   private connect() {
     this.setState({ kind: 'connecting', attempt: this.attempt })
-    const factory = this.options.socketFactory ?? ((url, protocols) => new WebSocket(url, protocols) as WebSocketLike)
+    const factory =
+      this.options.socketFactory ??
+      ((url, protocols) => new WebSocket(url, protocols) as WebSocketLike)
     const socket = factory(this.url(), [terminalProtocol])
     this.socket = socket
     this.opened = false
@@ -225,14 +230,22 @@ export class TerminalConnection {
     }
   }
 
-  private applyPresence(message: Exclude<ServerMessage, { type: 'presence_snapshot' }> & { version: number; participant: Participant }) {
+  private applyPresence(
+    message: Exclude<ServerMessage, { type: 'presence_snapshot' }> & {
+      version: number
+      participant: Participant
+    },
+  ) {
     if (message.version <= this.presenceVersion) return
     this.presenceVersion = message.version
     const id = message.participant.id
     const h = this.options.handlers
     switch (message.type) {
       case 'participant_joined':
-        this.participants = [...this.participants.filter((p) => p.id !== id), message.participant]
+        this.participants = [
+          ...this.participants.filter((p) => p.id !== id),
+          message.participant,
+        ]
         break
       case 'participant_left':
         this.participants = this.participants.filter((p) => p.id !== id)
@@ -243,7 +256,8 @@ export class TerminalConnection {
           this.revokedReason = message.reason
           h.onPermissions?.(message.permissions)
         }
-        if (message.reason) this.participants = this.participants.filter((p) => p.id !== id)
+        if (message.reason)
+          this.participants = this.participants.filter((p) => p.id !== id)
         break
     }
     h.onPresence?.(this.participants, this.selfId)
@@ -253,13 +267,29 @@ export class TerminalConnection {
     const opened = this.opened
     this.detach()
     if (this.stopped) return
-    if (this.exit || (code === CloseCode.Normal && reason === 'session ended')) {
+    if (
+      this.exit ||
+      (code === CloseCode.Normal && reason === 'session ended')
+    ) {
       const exit = this.exit
-      this.end('exited', exit ? { state: exit.state, exitCode: exit.exitCode, ...(exit.signal ? { signal: exit.signal } : {}) } : undefined)
+      this.end(
+        'exited',
+        exit
+          ? {
+              state: exit.state,
+              exitCode: exit.exitCode,
+              ...(exit.signal ? { signal: exit.signal } : {}),
+            }
+          : undefined,
+      )
       return
     }
     if (code === CloseCode.Unauthorized) {
-      const why = closeReasons[reason] ?? (this.revokedReason ? closeReasons[`access ${this.revokedReason}`] : undefined)
+      const why =
+        closeReasons[reason] ??
+        (this.revokedReason
+          ? closeReasons[`access ${this.revokedReason}`]
+          : undefined)
       this.end(why ?? 'unauthorized')
       return
     }
@@ -273,7 +303,9 @@ export class TerminalConnection {
       return
     }
     this.attempt += 1
-    const delay = Math.min(baseDelayMs * 2 ** (this.attempt - 1), maxDelayMs) + Math.floor((this.options.random ?? Math.random)() * 250)
+    const delay =
+      Math.min(baseDelayMs * 2 ** (this.attempt - 1), maxDelayMs) +
+      Math.floor((this.options.random ?? Math.random)() * 250)
     if (!opened && this.options.probe) {
       void this.options.probe().then(
         (result) => {
@@ -291,11 +323,17 @@ export class TerminalConnection {
   private end(reason: EndReason, exit?: ExitStatus) {
     this.stopped = true
     this.currentPermissions = noPermissions
-    this.setState(exit ? { kind: 'ended', reason, exit } : { kind: 'ended', reason })
+    this.setState(
+      exit ? { kind: 'ended', reason, exit } : { kind: 'ended', reason },
+    )
   }
 
   private schedule(delay: number) {
-    this.setState({ kind: 'reconnecting', attempt: this.attempt, retryInMs: delay })
+    this.setState({
+      kind: 'reconnecting',
+      attempt: this.attempt,
+      retryInMs: delay,
+    })
     clearTimeout(this.retryTimer)
     this.retryTimer = setTimeout(() => {
       if (!this.stopped) this.connect()
@@ -322,6 +360,7 @@ export class TerminalConnection {
     this.socket = null
     if (!socket) return
     socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null
-    if (socket.readyState < 2) socket.close(code ?? 4000, reason ?? 'reconnecting')
+    if (socket.readyState < 2)
+      socket.close(code ?? 4000, reason ?? 'reconnecting')
   }
 }

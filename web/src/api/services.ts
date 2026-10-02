@@ -11,7 +11,9 @@ export interface Services {
   onAdminSessionEnded(listener: () => void): () => void
 }
 
-export function createServices(options: { fetch?: typeof fetch } = {}): Services {
+export function createServices(
+  options: { fetch?: typeof fetch } = {},
+): Services {
   let csrf: string | undefined
   const listeners = new Set<() => void>()
   const client = createApiClient({

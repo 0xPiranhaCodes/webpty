@@ -8,7 +8,10 @@ let pending: string | null = null
 let redemption: { token: string; promise: Promise<unknown> } | null = null
 
 /** Removes a token fragment from the current URL and returns the token if well formed. */
-export function captureInviteToken(loc: Location = window.location, hist: History = window.history): string | null {
+export function captureInviteToken(
+  loc: Location = window.location,
+  hist: History = window.history,
+): string | null {
   if (!loc.hash) return null
   const params = new URLSearchParams(loc.hash.slice(1))
   if (!params.has('token')) return null
@@ -34,8 +37,12 @@ export function takePendingInvite(): string | null {
  * Redeems a token at most once per page load, so a re-render or repeated
  * effect cannot spend a single-use invitation twice.
  */
-export function redeemOnce<T>(token: string, redeem: (token: string) => Promise<T>): Promise<T> {
-  if (redemption?.token !== token) redemption = { token, promise: redeem(token) }
+export function redeemOnce<T>(
+  token: string,
+  redeem: (token: string) => Promise<T>,
+): Promise<T> {
+  if (redemption?.token !== token)
+    redemption = { token, promise: redeem(token) }
   return redemption.promise as Promise<T>
 }
 
@@ -46,7 +53,10 @@ let join: Promise<unknown> | null = null
  * existing guest session when there is none. Repeated calls (StrictMode
  * effects, remounts) share the first attempt.
  */
-export function beginJoin<T>(redeem: (token: string) => Promise<T>, resume: () => Promise<T>): Promise<T> {
+export function beginJoin<T>(
+  redeem: (token: string) => Promise<T>,
+  resume: () => Promise<T>,
+): Promise<T> {
   if (!join) {
     const token = takePendingInvite()
     join = token ? redeemOnce(token, redeem) : resume()

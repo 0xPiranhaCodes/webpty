@@ -8,7 +8,11 @@ import { TerminalEnvironmentProvider } from '../terminal/environment'
 import type { FakeServer } from './fakeServer'
 import { FakeSocket, FakeXterm } from './fakeTerminal'
 
-export function renderApp(path: string, server: FakeServer, options: { phone?: boolean } = {}) {
+export function renderApp(
+  path: string,
+  server: FakeServer,
+  options: { phone?: boolean } = {},
+) {
   const services = createServices({ fetch: server.fetch })
   return render(
     <ServicesProvider services={services}>

@@ -21,7 +21,13 @@ export const decodeAdminSession = object({
 })
 export type AdminSession = Decoded<typeof decodeAdminSession>
 
-export const terminalStates = ['starting', 'running', 'exited', 'failed', 'terminated'] as const
+export const terminalStates = [
+  'starting',
+  'running',
+  'exited',
+  'failed',
+  'terminated',
+] as const
 export type TerminalState = (typeof terminalStates)[number]
 
 export const decodeTerminal = object({
@@ -125,8 +131,20 @@ interface EventBase {
 export type PlaybackEvent =
   | (EventBase & { kind: 'output'; data: Uint8Array })
   | (EventBase & { kind: 'resize'; rows: number; cols: number })
-  | (EventBase & { kind: 'lifecycle'; state: string; exitCode?: number; signal?: string; reason?: string })
-  | (EventBase & { kind: 'presence'; event: string; participantId: string; role: string; reason?: string })
+  | (EventBase & {
+      kind: 'lifecycle'
+      state: string
+      exitCode?: number
+      signal?: string
+      reason?: string
+    })
+  | (EventBase & {
+      kind: 'presence'
+      event: string
+      participantId: string
+      role: string
+      reason?: string
+    })
 
 export function base64ToBytes(value: string): Uint8Array {
   const binary = atob(value)
@@ -135,13 +153,30 @@ export function base64ToBytes(value: string): Uint8Array {
   return bytes
 }
 
-const eventHeader = object({ seq: num, offsetMs: num, kind: oneOf('output', 'resize', 'lifecycle', 'presence') })
+const eventHeader = object({
+  seq: num,
+  offsetMs: num,
+  kind: oneOf('output', 'resize', 'lifecycle', 'presence'),
+})
 const outputData = object({ data: str })
 const resizeData = object({ rows: num, cols: num })
-const lifecycleData = object({ state: str, exitCode: optional(num), signal: optional(str), reason: optional(str) })
-const presenceData = object({ event: str, participantId: str, role: str, reason: optional(str) })
+const lifecycleData = object({
+  state: str,
+  exitCode: optional(num),
+  signal: optional(str),
+  reason: optional(str),
+})
+const presenceData = object({
+  event: str,
+  participantId: str,
+  role: str,
+  reason: optional(str),
+})
 
-export const decodePlaybackEvent: Decoder<PlaybackEvent> = (value, path = '') => {
+export const decodePlaybackEvent: Decoder<PlaybackEvent> = (
+  value,
+  path = '',
+) => {
   const { seq, offsetMs, kind } = eventHeader(value, path)
   const data = (value as { data: unknown }).data
   const at = `${path}.data`
@@ -158,17 +193,37 @@ export const decodePlaybackEvent: Decoder<PlaybackEvent> = (value, path = '') =>
       return { seq, offsetMs, kind, ...resizeData(data, at) }
     case 'lifecycle': {
       const d = lifecycleData(data, at)
-      return { seq, offsetMs, kind, state: d.state, ...definedOnly({ exitCode: d.exitCode, signal: d.signal, reason: d.reason }) }
+      return {
+        seq,
+        offsetMs,
+        kind,
+        state: d.state,
+        ...definedOnly({
+          exitCode: d.exitCode,
+          signal: d.signal,
+          reason: d.reason,
+        }),
+      }
     }
     case 'presence': {
       const d = presenceData(data, at)
-      return { seq, offsetMs, kind, event: d.event, participantId: d.participantId, role: d.role, ...definedOnly({ reason: d.reason }) }
+      return {
+        seq,
+        offsetMs,
+        kind,
+        event: d.event,
+        participantId: d.participantId,
+        role: d.role,
+        ...definedOnly({ reason: d.reason }),
+      }
     }
   }
 }
 
 function definedOnly<T extends Record<string, unknown>>(values: T): Partial<T> {
-  return Object.fromEntries(Object.entries(values).filter(([, v]) => v !== undefined)) as Partial<T>
+  return Object.fromEntries(
+    Object.entries(values).filter(([, v]) => v !== undefined),
+  ) as Partial<T>
 }
 
 export const decodeCursor = object({ afterMs: num, afterSeq: num })
@@ -190,10 +245,22 @@ export const decodeAuditEvent = object({
 })
 export type AuditEvent = Decoded<typeof decodeAuditEvent>
 
-export const decodeAuditPage = object({ events: arrayOf(decodeAuditEvent), nextCursor: nullable(str) })
+export const decodeAuditPage = object({
+  events: arrayOf(decodeAuditEvent),
+  nextCursor: nullable(str),
+})
 export type AuditPage = Decoded<typeof decodeAuditPage>
 
-export const decodeSetting = object({ key: str, group: str, label: str, value: str, restartRequired: bool })
+export const decodeSetting = object({
+  key: str,
+  group: str,
+  label: str,
+  value: str,
+  restartRequired: bool,
+})
 export type Setting = Decoded<typeof decodeSetting>
-export const decodeSettings = object({ readOnly: bool, settings: arrayOf(decodeSetting) })
+export const decodeSettings = object({
+  readOnly: bool,
+  settings: arrayOf(decodeSetting),
+})
 export type RuntimeSettings = Decoded<typeof decodeSettings>

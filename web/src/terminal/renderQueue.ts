@@ -51,7 +51,10 @@ export class RenderQueue {
   write(data: Uint8Array) {
     if (this.disposed || data.length === 0) return
     for (let offset = 0; offset < data.length; offset += this.maxChunk) {
-      const part = offset === 0 && data.length <= this.maxChunk ? data : data.subarray(offset, offset + this.maxChunk)
+      const part =
+        offset === 0 && data.length <= this.maxChunk
+          ? data
+          : data.subarray(offset, offset + this.maxChunk)
       const last = this.ops.at(-1)
       if (last?.kind === 'write' && last.size + part.length <= this.maxChunk) {
         last.parts.push(part)
@@ -102,7 +105,9 @@ export class RenderQueue {
       while (this.ops.length > 0 && !this.inFlight) {
         const op = this.ops.shift()!
         if (op.kind === 'write') {
-          this.submit(op.parts.length === 1 ? op.parts[0] : concat(op.parts, op.size))
+          this.submit(
+            op.parts.length === 1 ? op.parts[0] : concat(op.parts, op.size),
+          )
           continue
         }
         if (op.kind === 'reset') this.terminal.reset()

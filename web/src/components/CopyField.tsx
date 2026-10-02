@@ -20,14 +20,28 @@ export function CopyField({ label, value }: { label: string; value: string }) {
     <div className="copy-field">
       <label htmlFor={id}>{label}</label>
       <div className="copy-field__row">
-        <input ref={input} id={id} className="input mono" readOnly value={value} onFocus={(e) => e.currentTarget.select()} spellCheck={false} />
+        <input
+          ref={input}
+          id={id}
+          className="input mono"
+          readOnly
+          value={value}
+          onFocus={(e) => e.currentTarget.select()}
+          spellCheck={false}
+        />
         <button type="button" className="btn btn--primary" onClick={copy}>
-          {copied === 'yes' ? <Check aria-hidden size={14} /> : <Copy aria-hidden size={14} />}
+          {copied === 'yes' ? (
+            <Check aria-hidden size={14} />
+          ) : (
+            <Copy aria-hidden size={14} />
+          )}
           {copied === 'yes' ? 'Copied' : 'Copy link'}
         </button>
       </div>
       <p className="field-hint" role="status">
-        {copied === 'manual' ? 'Copying is blocked here. The link is selected; press Ctrl+C or ⌘C.' : ''}
+        {copied === 'manual'
+          ? 'Copying is blocked here. The link is selected; press Ctrl+C or ⌘C.'
+          : ''}
       </p>
     </div>
   )

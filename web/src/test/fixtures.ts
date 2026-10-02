@@ -130,10 +130,25 @@ export const recordingEventsPage = {
     { seq: 1, offsetMs: 0, kind: 'lifecycle', data: { state: 'running' } },
     { seq: 2, offsetMs: 0, kind: 'output', data: { data: b64('$ ') } },
     { seq: 3, offsetMs: 1200, kind: 'output', data: { data: b64('ls\r\n') } },
-    { seq: 4, offsetMs: 1500, kind: 'presence', data: { event: 'joined', participantId: 'pt_1', role: 'viewer' } },
+    {
+      seq: 4,
+      offsetMs: 1500,
+      kind: 'presence',
+      data: { event: 'joined', participantId: 'pt_1', role: 'viewer' },
+    },
     { seq: 5, offsetMs: 2000, kind: 'resize', data: { rows: 30, cols: 100 } },
-    { seq: 6, offsetMs: 2500, kind: 'output', data: { data: b64('README.md\r\n') } },
-    { seq: 7, offsetMs: 4000, kind: 'lifecycle', data: { state: 'exited', exitCode: 0 } },
+    {
+      seq: 6,
+      offsetMs: 2500,
+      kind: 'output',
+      data: { data: b64('README.md\r\n') },
+    },
+    {
+      seq: 7,
+      offsetMs: 4000,
+      kind: 'lifecycle',
+      data: { state: 'exited', exitCode: 0 },
+    },
   ],
   next: null,
 }
@@ -145,9 +160,19 @@ export const auditPage = {
       type: 'access.grant.created',
       occurredAt: '2026-10-01T04:05:00Z',
       remoteAddr: '127.0.0.1',
-      details: { terminalId: terminalRunning.id, grantId: editorGrant.id, role: 'editor' },
+      details: {
+        terminalId: terminalRunning.id,
+        grantId: editorGrant.id,
+        role: 'editor',
+      },
     },
-    { id: '41', type: 'admin.login', occurredAt: '2026-10-01T04:01:00Z', remoteAddr: '127.0.0.1', details: {} },
+    {
+      id: '41',
+      type: 'admin.login',
+      occurredAt: '2026-10-01T04:01:00Z',
+      remoteAddr: '127.0.0.1',
+      details: {},
+    },
   ],
   nextCursor: '41',
 }
@@ -155,9 +180,33 @@ export const auditPage = {
 export const settings = {
   readOnly: true,
   settings: [
-    { key: 'WEBPTY_ADDRESS', group: 'Server', label: 'Listen address', value: '127.0.0.1:8000', restartRequired: true },
-    { key: 'WEBPTY_PUBLIC_ORIGIN', group: 'Server', label: 'Public origin', value: 'Not set (loopback only)', restartRequired: true },
-    { key: 'WEBPTY_RECORDING_ENABLED', group: 'Recording', label: 'Record new terminals', value: 'true', restartRequired: true },
-    { key: 'WEBPTY_RECORDING_RETENTION', group: 'Recording', label: 'Retention', value: '720h0m0s', restartRequired: true },
+    {
+      key: 'WEBPTY_ADDRESS',
+      group: 'Server',
+      label: 'Listen address',
+      value: '127.0.0.1:8000',
+      restartRequired: true,
+    },
+    {
+      key: 'WEBPTY_PUBLIC_ORIGIN',
+      group: 'Server',
+      label: 'Public origin',
+      value: 'Not set (loopback only)',
+      restartRequired: true,
+    },
+    {
+      key: 'WEBPTY_RECORDING_ENABLED',
+      group: 'Recording',
+      label: 'Record new terminals',
+      value: 'true',
+      restartRequired: true,
+    },
+    {
+      key: 'WEBPTY_RECORDING_RETENTION',
+      group: 'Recording',
+      label: 'Retention',
+      value: '720h0m0s',
+      restartRequired: true,
+    },
   ],
 }

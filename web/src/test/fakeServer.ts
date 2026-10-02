@@ -12,7 +12,9 @@ export interface FakeResponse {
   headers?: Record<string, string>
 }
 
-export type Route = FakeResponse | ((request: FakeRequest) => FakeResponse | Promise<FakeResponse>)
+export type Route =
+  | FakeResponse
+  | ((request: FakeRequest) => FakeResponse | Promise<FakeResponse>)
 
 /**
  * An in-memory stand-in for the Go server: routes are keyed by
@@ -34,10 +36,16 @@ export function createFakeServer(initial: Record<string, Route> = {}) {
       headers: new Headers(init?.headers),
     }
     requests.push(request)
-    const route = routes.get(`${method} ${url.pathname}${url.search}`) ?? routes.get(`${method} ${url.pathname}`)
+    const route =
+      routes.get(`${method} ${url.pathname}${url.search}`) ??
+      routes.get(`${method} ${url.pathname}`)
     if (!route) return new Response('404 page not found\n', { status: 404 })
     const response = typeof route === 'function' ? await route(request) : route
-    if (response.body === undefined) return new Response(null, { status: response.status ?? 204, headers: response.headers })
+    if (response.body === undefined)
+      return new Response(null, {
+        status: response.status ?? 204,
+        headers: response.headers,
+      })
     return new Response(JSON.stringify(response.body), {
       status: response.status ?? 200,
       headers: { 'Content-Type': 'application/json', ...response.headers },

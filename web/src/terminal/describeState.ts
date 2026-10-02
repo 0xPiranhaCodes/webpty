@@ -14,7 +14,8 @@ export function describeState(state: ConnectionState): string {
           const exit = state.exit
           if (exit?.state === 'terminated') return 'Terminated'
           if (exit?.signal) return `Ended by signal ${exit.signal}`
-          if (exit?.exitCode != null) return `Ended with exit code ${exit.exitCode}`
+          if (exit?.exitCode != null)
+            return `Ended with exit code ${exit.exitCode}`
           return 'Ended'
         }
         case 'revoked':
@@ -36,4 +37,3 @@ export function describeState(state: ConnectionState): string {
       }
   }
 }
-

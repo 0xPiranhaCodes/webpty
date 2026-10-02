@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
-import { type ConnectionState, TerminalConnection, type WebSocketLike } from './connection'
+import {
+  type ConnectionState,
+  TerminalConnection,
+  type WebSocketLike,
+} from './connection'
 import { parseServerMessage } from './protocol'
 
 class FakeSocket implements WebSocketLike {
@@ -54,7 +58,13 @@ function ready(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function setup(options: { probe?: () => Promise<'retry' | { ended: 'exited' | 'unauthorized' | 'not_found' }> } = {}) {
+function setup(
+  options: {
+    probe?: () => Promise<
+      'retry' | { ended: 'exited' | 'unauthorized' | 'not_found' }
+    >
+  } = {},
+) {
   const states: ConnectionState[] = []
   const output: string[] = []
   const readies: boolean[] = []
@@ -75,7 +85,15 @@ function setup(options: { probe?: () => Promise<'retry' | { ended: 'exited' | 'u
       onRecordingStatus: (m) => recording.push(m.code),
     },
   })
-  return { connection, states, output, readies, notices, recording, socket: () => FakeSocket.all.at(-1)! }
+  return {
+    connection,
+    states,
+    output,
+    readies,
+    notices,
+    recording,
+    socket: () => FakeSocket.all.at(-1)!,
+  }
 }
 
 beforeEach(() => {
@@ -89,16 +107,28 @@ afterEach(() => {
 describe('protocol parsing', () => {
   test('rejects malformed and unknown frames', () => {
     expect(parseServerMessage('not json')).toBeNull()
-    expect(parseServerMessage('{"type":"output","seq":"1","data":"x"}')).toBeNull()
+    expect(
+      parseServerMessage('{"type":"output","seq":"1","data":"x"}'),
+    ).toBeNull()
     expect(parseServerMessage('{"type":"telemetry"}')).toBeNull()
   })
 
   test('decodes output bytes and replay-gap errors', () => {
-    const output = parseServerMessage(JSON.stringify({ type: 'output', seq: 3, data: b64('hi') }))
-    expect(output?.type === 'output' && Array.from(output.data)).toEqual([104, 105])
+    const output = parseServerMessage(
+      JSON.stringify({ type: 'output', seq: 3, data: b64('hi') }),
+    )
+    expect(output?.type === 'output' && Array.from(output.data)).toEqual([
+      104, 105,
+    ])
     expect(
       parseServerMessage(
-        JSON.stringify({ type: 'error', code: 'replay_gap', message: 'requested output is no longer buffered', firstSeq: 90, lastSeq: 120 }),
+        JSON.stringify({
+          type: 'error',
+          code: 'replay_gap',
+          message: 'requested output is no longer buffered',
+          firstSeq: 90,
+          lastSeq: 120,
+        }),
       ),
     ).toMatchObject({ type: 'error', code: 'replay_gap', firstSeq: 90 })
   })
@@ -109,7 +139,9 @@ describe('terminal connection', () => {
     const t = setup()
     t.connection.start()
 
-    expect(t.socket().url).toBe('wss://pty.example:8443/api/v1/terminals/tm_1/ws')
+    expect(t.socket().url).toBe(
+      'wss://pty.example:8443/api/v1/terminals/tm_1/ws',
+    )
     expect(t.socket().protocols).toEqual(['webpty.terminal.v1'])
     expect(t.states.at(-1)).toEqual({ kind: 'connecting', attempt: 0 })
 
@@ -142,11 +174,17 @@ describe('terminal connection', () => {
 
     t.socket().serverClose(1006)
 
-    expect(t.states.at(-1)).toMatchObject({ kind: 'reconnecting', attempt: 1, retryInMs: 500 })
+    expect(t.states.at(-1)).toMatchObject({
+      kind: 'reconnecting',
+      attempt: 1,
+      retryInMs: 500,
+    })
     expect(FakeSocket.all).toHaveLength(1)
     vi.advanceTimersByTime(500)
     expect(FakeSocket.all).toHaveLength(2)
-    expect(t.socket().url).toBe('wss://pty.example:8443/api/v1/terminals/tm_1/ws?afterSeq=7')
+    expect(t.socket().url).toBe(
+      'wss://pty.example:8443/api/v1/terminals/tm_1/ws?afterSeq=7',
+    )
 
     t.socket().open()
     t.socket().server(ready({ seq: 9 }))
@@ -166,7 +204,9 @@ describe('terminal connection', () => {
       t.socket().serverClose(1006)
       const state = t.states.at(-1)!
       delays.push(state.kind === 'reconnecting' ? state.retryInMs : -1)
-      vi.advanceTimersByTime(state.kind === 'reconnecting' ? state.retryInMs : 0)
+      vi.advanceTimersByTime(
+        state.kind === 'reconnecting' ? state.retryInMs : 0,
+      )
     }
     expect(delays).toEqual([500, 1000, 2000, 4000, 8000, 10000, 10000])
   })
@@ -181,12 +221,20 @@ describe('terminal connection', () => {
     vi.advanceTimersByTime(500)
 
     t.socket().open()
-    t.socket().server({ type: 'error', code: 'replay_gap', message: 'requested output is no longer buffered', firstSeq: 90, lastSeq: 120 })
+    t.socket().server({
+      type: 'error',
+      code: 'replay_gap',
+      message: 'requested output is no longer buffered',
+      firstSeq: 90,
+      lastSeq: 120,
+    })
     t.socket().serverClose(4001, 'replay gap')
 
     expect(t.notices).toContain('replay_gap')
     vi.advanceTimersByTime(0)
-    expect(t.socket().url).toBe('wss://pty.example:8443/api/v1/terminals/tm_1/ws')
+    expect(t.socket().url).toBe(
+      'wss://pty.example:8443/api/v1/terminals/tm_1/ws',
+    )
     t.socket().open()
     t.socket().server(ready({ seq: 120 }))
     t.socket().server({ type: 'output', seq: 95, data: b64('new') })
@@ -198,8 +246,15 @@ describe('terminal connection', () => {
     const t = setup()
     t.connection.start()
     t.socket().open()
-    t.socket().server(ready({ role: 'viewer', permissions: { input: false, resize: false } }))
-    t.socket().server({ type: 'presence_snapshot', version: 1, self: 'pt_me', participants: [{ id: 'pt_me', role: 'viewer' }] })
+    t.socket().server(
+      ready({ role: 'viewer', permissions: { input: false, resize: false } }),
+    )
+    t.socket().server({
+      type: 'presence_snapshot',
+      version: 1,
+      self: 'pt_me',
+      participants: [{ id: 'pt_me', role: 'viewer' }],
+    })
     t.socket().server({
       type: 'permission_changed',
       version: 2,
@@ -231,7 +286,11 @@ describe('terminal connection', () => {
     t.socket().server({ type: 'exit', state: 'exited', exitCode: 2 })
     t.socket().serverClose(1000, 'session ended')
     vi.advanceTimersByTime(60_000)
-    expect(t.states.at(-1)).toEqual({ kind: 'ended', reason: 'exited', exit: { state: 'exited', exitCode: 2 } })
+    expect(t.states.at(-1)).toEqual({
+      kind: 'ended',
+      reason: 'exited',
+      exit: { state: 'exited', exitCode: 2 },
+    })
     expect(FakeSocket.all).toHaveLength(1)
   })
 
@@ -239,7 +298,11 @@ describe('terminal connection', () => {
     const viewer = setup()
     viewer.connection.start()
     viewer.socket().open()
-    viewer.socket().server(ready({ role: 'viewer', permissions: { input: false, resize: false } }))
+    viewer
+      .socket()
+      .server(
+        ready({ role: 'viewer', permissions: { input: false, resize: false } }),
+      )
     expect(viewer.connection.sendInput('rm -rf /\r')).toBe(false)
     expect(viewer.connection.sendResize(40, 100)).toBe(false)
     expect(viewer.socket().sent).toEqual([])
@@ -251,7 +314,10 @@ describe('terminal connection', () => {
     editor.socket().server(ready())
     expect(editor.connection.sendInput('ls\r')).toBe(true)
     expect(editor.connection.sendResize(40, 100)).toBe(true)
-    expect(editor.socket().sent).toEqual(['{"type":"input","data":"ls\\r"}', '{"type":"resize","rows":40,"cols":100}'])
+    expect(editor.socket().sent).toEqual([
+      '{"type":"input","data":"ls\\r"}',
+      '{"type":"resize","rows":40,"cols":100}',
+    ])
   })
 
   test('losing input permission mid-session stops input immediately', () => {
@@ -259,10 +325,26 @@ describe('terminal connection', () => {
     t.connection.start()
     t.socket().open()
     t.socket().server(ready())
-    t.socket().server({ type: 'presence_snapshot', version: 1, self: 'pt_me', participants: [{ id: 'pt_me', role: 'editor' }] })
-    t.socket().server({ type: 'permission_changed', version: 2, participant: { id: 'pt_other', role: 'viewer' }, permissions: { input: false, resize: false } })
+    t.socket().server({
+      type: 'presence_snapshot',
+      version: 1,
+      self: 'pt_me',
+      participants: [{ id: 'pt_me', role: 'editor' }],
+    })
+    t.socket().server({
+      type: 'permission_changed',
+      version: 2,
+      participant: { id: 'pt_other', role: 'viewer' },
+      permissions: { input: false, resize: false },
+    })
     expect(t.connection.permissions.input).toBe(true)
-    t.socket().server({ type: 'permission_changed', version: 3, participant: { id: 'pt_me', role: 'editor' }, permissions: { input: false, resize: false }, reason: 'replaced' })
+    t.socket().server({
+      type: 'permission_changed',
+      version: 3,
+      participant: { id: 'pt_me', role: 'editor' },
+      permissions: { input: false, resize: false },
+      reason: 'replaced',
+    })
     expect(t.connection.sendInput('x')).toBe(false)
   })
 
@@ -277,7 +359,9 @@ describe('terminal connection', () => {
     connection.start()
     FakeSocket.all.at(-1)!.open()
     FakeSocket.all.at(-1)!.server(ready())
-    FakeSocket.all.at(-1)!.server({ type: 'exit', state: 'exited', exitCode: 0 })
+    FakeSocket.all
+      .at(-1)!
+      .server({ type: 'exit', state: 'exited', exitCode: 0 })
     expect(permissions).toEqual([true, false])
     expect(connection.sendInput('x')).toBe(false)
   })
@@ -313,7 +397,11 @@ describe('terminal connection', () => {
     t.socket().open()
     t.socket().server(ready())
     t.socket().server({ type: 'output', seq: 4, data: b64('z') })
-    t.socket().server({ type: 'error', code: 'input_overflow', message: 'terminal is not accepting input fast enough' })
+    t.socket().server({
+      type: 'error',
+      code: 'input_overflow',
+      message: 'terminal is not accepting input fast enough',
+    })
     t.socket().serverClose(4004, 'input backlog')
     expect(t.notices).toContain('input_overflow')
     vi.advanceTimersByTime(500)
@@ -341,7 +429,8 @@ describe('terminal connection', () => {
       recordingId: 'rc_1',
       status: 'incomplete',
       code: 'queue_overflow',
-      message: 'recording stopped: output arrived faster than it could be stored',
+      message:
+        'recording stopped: output arrived faster than it could be stored',
     })
     expect(t.recording).toEqual(['queue_overflow'])
   })

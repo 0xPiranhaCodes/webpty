@@ -16,7 +16,9 @@
 .spine__secondary {
   display: block;
   width: 100%;
-  transition: background-color var(--state-change), flex-grow var(--state-change);
+  transition:
+    background-color var(--state-change),
+    flex-grow var(--state-change);
 }
 
 .spine__primary {
@@ -44,7 +46,11 @@
 
 /* Interrupted: amber dashes, readable without colour. */
 .spine[data-state='reconnecting'] .spine__primary {
-  background: repeating-linear-gradient(to bottom, var(--warning) 0 10px, transparent 10px 16px);
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--warning) 0 10px,
+    transparent 10px 16px
+  );
 }
 
 .spine[data-state='ended'] .spine__primary {
@@ -52,7 +58,11 @@
 }
 
 .spine[data-state='lost'] .spine__primary {
-  background: repeating-linear-gradient(to bottom, var(--destructive) 0 2px, transparent 2px 6px);
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--destructive) 0 2px,
+    transparent 2px 6px
+  );
 }
 
 .spine[data-state='playback'] .spine__primary {

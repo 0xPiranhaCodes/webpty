@@ -24,7 +24,10 @@ export interface XtermHandle {
   dispose(): void
 }
 
-export type XtermFactory = (container: HTMLElement, options?: { label?: string }) => XtermHandle
+export type XtermFactory = (
+  container: HTMLElement,
+  options?: { label?: string },
+) => XtermHandle
 
 export const terminalTheme = {
   background: '#07090d',
@@ -64,7 +67,8 @@ export const createXterm: XtermFactory = (container, options = {}) => {
   const fit = new FitAddon()
   terminal.loadAddon(fit)
   terminal.open(container)
-  if (options.label) terminal.textarea?.setAttribute('aria-label', options.label)
+  if (options.label)
+    terminal.textarea?.setAttribute('aria-label', options.label)
 
   return {
     get cols() {
@@ -76,11 +80,13 @@ export const createXterm: XtermFactory = (container, options = {}) => {
     write: (data, done) => terminal.write(data, done),
     reset: () => terminal.reset(),
     resize: (cols, rows) => {
-      if (cols !== terminal.cols || rows !== terminal.rows) terminal.resize(cols, rows)
+      if (cols !== terminal.cols || rows !== terminal.rows)
+        terminal.resize(cols, rows)
     },
     proposeFit: () => {
       const size = fit.proposeDimensions()
-      if (!size || !Number.isFinite(size.cols) || !Number.isFinite(size.rows)) return null
+      if (!size || !Number.isFinite(size.cols) || !Number.isFinite(size.rows))
+        return null
       return { cols: Math.max(2, size.cols), rows: Math.max(1, size.rows) }
     },
     setInputEnabled: (enabled) => {

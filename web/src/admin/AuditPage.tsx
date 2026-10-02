@@ -4,7 +4,12 @@ import { useState } from 'react'
 import { useApi } from '../api/services'
 import type { AuditEvent } from '../api/types'
 import { describeError } from '../components/describeError'
-import { EmptyState, ErrorState, InlineError, Loading } from '../components/StateViews'
+import {
+  EmptyState,
+  ErrorState,
+  InlineError,
+  Loading,
+} from '../components/StateViews'
 import { formatDateTime } from '../lib/format'
 import { toApiError, useAsync } from '../lib/useAsync'
 
@@ -23,7 +28,10 @@ function Details({ details }: { details: Record<string, string> }) {
 export function AuditPage() {
   const api = useApi()
   const first = useAsync('audit', (signal) => api.auditPage(undefined, signal))
-  const [older, setOlder] = useState<{ events: AuditEvent[]; next: string | null } | null>(null)
+  const [older, setOlder] = useState<{
+    events: AuditEvent[]
+    next: string | null
+  } | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -42,7 +50,10 @@ export function AuditPage() {
     setError(null)
     try {
       const page = await api.auditPage(next)
-      setOlder((prev) => ({ events: [...(prev?.events ?? []), ...page.events], next: page.nextCursor }))
+      setOlder((prev) => ({
+        events: [...(prev?.events ?? []), ...page.events],
+        next: page.nextCursor,
+      }))
     } catch (e) {
       const copy = describeError(toApiError(e))
       setError(`${copy.title} ${copy.body}`)
@@ -55,13 +66,25 @@ export function AuditPage() {
     <div className="page">
       <header className="page__header">
         <h1>Audit log</h1>
-        <button type="button" className="btn" onClick={refresh} disabled={first.status === 'loading' || pending}>
+        <button
+          type="button"
+          className="btn"
+          onClick={refresh}
+          disabled={first.status === 'loading' || pending}
+        >
           <RefreshCw aria-hidden size={14} /> Refresh
         </button>
       </header>
-      <p className="lede muted">Security-relevant events, newest first. Tokens and passwords are never recorded.</p>
-      {first.status === 'loading' && !first.data && <Loading label="Loading audit events" />}
-      {first.status === 'error' && <ErrorState error={first.error} onRetry={first.reload} />}
+      <p className="lede muted">
+        Security-relevant events, newest first. Tokens and passwords are never
+        recorded.
+      </p>
+      {first.status === 'loading' && !first.data && (
+        <Loading label="Loading audit events" />
+      )}
+      {first.status === 'error' && (
+        <ErrorState error={first.error} onRetry={first.reload} />
+      )}
       {first.data &&
         (events.length === 0 ? (
           <EmptyState title="No audit events yet" />
@@ -81,7 +104,9 @@ export function AuditPage() {
                 <tbody>
                   {events.map((event) => (
                     <tr key={event.id}>
-                      <td className="nowrap">{formatDateTime(event.occurredAt)}</td>
+                      <td className="nowrap">
+                        {formatDateTime(event.occurredAt)}
+                      </td>
                       <td className="mono">{event.type}</td>
                       <td className="mono">{event.remoteAddr || '—'}</td>
                       <td>
@@ -95,7 +120,12 @@ export function AuditPage() {
             {error && <InlineError>{error}</InlineError>}
             <div className="pager">
               {next ? (
-                <button type="button" className="btn" onClick={loadMore} disabled={pending}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={loadMore}
+                  disabled={pending}
+                >
                   {pending ? 'Loading…' : 'Load older events'}
                 </button>
               ) : (

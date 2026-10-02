@@ -16,7 +16,8 @@
   --destructive: #f06a6a;
 
   --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --font-mono:
+    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
 
   --fs-xs: 0.75rem;
   --fs-sm: 0.8125rem;

@@ -19,9 +19,16 @@ const lifetimes = [
 ]
 
 const roleName = (role: GrantRole) => (role === 'editor' ? 'Editor' : 'Viewer')
-const grantName = (grant: Grant) => grant.label || `Unlabeled ${grant.role} link`
+const grantName = (grant: Grant) =>
+  grant.label || `Unlabeled ${grant.role} link`
 
-function GrantItem({ grant, onRevoke }: { grant: Grant; onRevoke: (grant: Grant) => void }) {
+function GrantItem({
+  grant,
+  onRevoke,
+}: {
+  grant: Grant
+  onRevoke: (grant: Grant) => void
+}) {
   return (
     <li className="grant" data-status={grant.status}>
       <div className="grant__head">
@@ -31,10 +38,19 @@ function GrantItem({ grant, onRevoke }: { grant: Grant; onRevoke: (grant: Grant)
       </div>
       <p className="grant__meta muted">
         <span>{`Used ${grant.redemptionCount} of ${grant.maxRedemptions}`}</span>
-        <span>{grant.status === 'active' ? `Expires ${formatDateTime(grant.expiresAt)}` : `Ended ${formatDateTime(grant.revokedAt ?? grant.updatedAt)}`}</span>
+        <span>
+          {grant.status === 'active'
+            ? `Expires ${formatDateTime(grant.expiresAt)}`
+            : `Ended ${formatDateTime(grant.revokedAt ?? grant.updatedAt)}`}
+        </span>
       </p>
       {grant.status === 'active' && (
-        <button type="button" className="btn btn--quiet btn--destructive-text" onClick={() => onRevoke(grant)} aria-label={`Revoke ${grantName(grant)}`}>
+        <button
+          type="button"
+          className="btn btn--quiet btn--destructive-text"
+          onClick={() => onRevoke(grant)}
+          aria-label={`Revoke ${grantName(grant)}`}
+        >
           Revoke
         </button>
       )}
@@ -42,13 +58,22 @@ function GrantItem({ grant, onRevoke }: { grant: Grant; onRevoke: (grant: Grant)
   )
 }
 
-function GrantList({ grants, onRevoke }: { grants: Grant[]; onRevoke: (grant: Grant) => void }) {
+function GrantList({
+  grants,
+  onRevoke,
+}: {
+  grants: Grant[]
+  onRevoke: (grant: Grant) => void
+}) {
   const active = grants.filter((g) => g.status === 'active')
   const ended = grants.filter((g) => g.status !== 'active')
   return (
     <>
       {active.length === 0 ? (
-        <p className="muted">No active links. People you share a link with appear under People while connected.</p>
+        <p className="muted">
+          No active links. People you share a link with appear under People
+          while connected.
+        </p>
       ) : (
         <ul className="grant-list" aria-label="Links for this terminal">
           {active.map((grant) => (
@@ -74,10 +99,18 @@ function GrantList({ grants, onRevoke }: { grants: Grant[]; onRevoke: (grant: Gr
  * Creates, lists, and revokes share links for one terminal. The raw link
  * exists only in the create response and is dropped when dismissed.
  */
-export function GrantsPanel({ terminalId, compact = false }: { terminalId: string; compact?: boolean }) {
+export function GrantsPanel({
+  terminalId,
+  compact = false,
+}: {
+  terminalId: string
+  compact?: boolean
+}) {
   const api = useApi()
   const ids = { role: useId(), label: useId(), ttl: useId(), single: useId() }
-  const grants = useAsync(`grants:${terminalId}`, (signal) => api.listGrants(terminalId, signal))
+  const grants = useAsync(`grants:${terminalId}`, (signal) =>
+    api.listGrants(terminalId, signal),
+  )
   const [role, setRole] = useState<GrantRole>('viewer')
   const [label, setLabel] = useState('')
   const [ttl, setTtl] = useState(86400)
@@ -88,7 +121,9 @@ export function GrantsPanel({ terminalId, compact = false }: { terminalId: strin
   const [confirmReplace, setConfirmReplace] = useState<Grant | null>(null)
   const [revoking, setRevoking] = useState<Grant | null>(null)
 
-  const activeEditor = grants.data?.find((g) => g.role === 'editor' && g.status === 'active') ?? null
+  const activeEditor =
+    grants.data?.find((g) => g.role === 'editor' && g.status === 'active') ??
+    null
 
   const chooseRole = (next: GrantRole) => {
     setRole(next)
@@ -124,15 +159,29 @@ export function GrantsPanel({ terminalId, compact = false }: { terminalId: strin
   }
 
   return (
-    <section className={compact ? 'rail-section grants grants--compact' : 'grants'} aria-labelledby={`${ids.role}-h`}>
+    <section
+      className={compact ? 'rail-section grants grants--compact' : 'grants'}
+      aria-labelledby={`${ids.role}-h`}
+    >
       <h2 id={`${ids.role}-h`}>Share links</h2>
 
       {created ? (
         <div className="invite">
-          <CopyField label={`${roleName(created.grant.role)} link`} value={created.inviteUrl} />
+          <CopyField
+            label={`${roleName(created.grant.role)} link`}
+            value={created.inviteUrl}
+          />
           <p className="invite__warning">Copy it now. It is shown only once.</p>
-          {created.replaced.length > 0 && <p className="muted">The previous editor link was replaced and its user disconnected.</p>}
-          <button type="button" className="btn" onClick={() => setCreated(null)}>
+          {created.replaced.length > 0 && (
+            <p className="muted">
+              The previous editor link was replaced and its user disconnected.
+            </p>
+          )}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setCreated(null)}
+          >
             Done
           </button>
         </div>
@@ -142,7 +191,13 @@ export function GrantsPanel({ terminalId, compact = false }: { terminalId: strin
             <legend>Role</legend>
             {(['viewer', 'editor'] as const).map((r) => (
               <label key={r} className="segmented__option">
-                <input type="radio" name={`${ids.role}-role`} value={r} checked={role === r} onChange={() => chooseRole(r)} />
+                <input
+                  type="radio"
+                  name={`${ids.role}-role`}
+                  value={r}
+                  checked={role === r}
+                  onChange={() => chooseRole(r)}
+                />
                 <span>{roleName(r)}</span>
               </label>
             ))}
@@ -154,12 +209,24 @@ export function GrantsPanel({ terminalId, compact = false }: { terminalId: strin
           </p>
           <div className="field">
             <label htmlFor={ids.label}>Label</label>
-            <input id={ids.label} className="input" value={label} maxLength={80} onChange={(e) => setLabel(e.target.value)} placeholder="Who is this for?" />
+            <input
+              id={ids.label}
+              className="input"
+              value={label}
+              maxLength={80}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="Who is this for?"
+            />
           </div>
           <div className="field-row">
             <div className="field">
               <label htmlFor={ids.ttl}>Expires after</label>
-              <select id={ids.ttl} className="input" value={ttl} onChange={(e) => setTtl(Number(e.target.value))}>
+              <select
+                id={ids.ttl}
+                className="input"
+                value={ttl}
+                onChange={(e) => setTtl(Number(e.target.value))}
+              >
                 {lifetimes.map((l) => (
                   <option key={l.seconds} value={l.seconds}>
                     {l.label}
@@ -168,28 +235,52 @@ export function GrantsPanel({ terminalId, compact = false }: { terminalId: strin
               </select>
             </div>
             <label className="check">
-              <input id={ids.single} type="checkbox" checked={singleUse} onChange={(e) => setSingleUse(e.target.checked)} />
+              <input
+                id={ids.single}
+                type="checkbox"
+                checked={singleUse}
+                onChange={(e) => setSingleUse(e.target.checked)}
+              />
               <span>Single use</span>
             </label>
           </div>
           {error && <InlineError>{error}</InlineError>}
           <div>
-            <button type="submit" className="btn btn--primary" disabled={pending}>
-              <Link2 aria-hidden size={14} /> {pending ? 'Creating…' : 'Create link'}
+            <button
+              type="submit"
+              className="btn btn--primary"
+              disabled={pending}
+            >
+              <Link2 aria-hidden size={14} />{' '}
+              {pending ? 'Creating…' : 'Create link'}
             </button>
           </div>
         </form>
       )}
 
-      {grants.status === 'loading' && !grants.data && <Loading label="Loading links" />}
-      {grants.status === 'error' && <ErrorState error={grants.error} subject="terminal" onRetry={grants.reload} />}
+      {grants.status === 'loading' && !grants.data && (
+        <Loading label="Loading links" />
+      )}
+      {grants.status === 'error' && (
+        <ErrorState
+          error={grants.error}
+          subject="terminal"
+          onRetry={grants.reload}
+        />
+      )}
       {grants.data && <GrantList grants={grants.data} onRevoke={setRevoking} />}
 
       {confirmReplace && (
-        <ConfirmDialog title="Replace the current editor?" confirmLabel="Replace editor" onConfirm={create} onCancel={() => setConfirmReplace(null)}>
+        <ConfirmDialog
+          title="Replace the current editor?"
+          confirmLabel="Replace editor"
+          onConfirm={create}
+          onCancel={() => setConfirmReplace(null)}
+        >
           <p>
-            The editor link <strong>{grantName(confirmReplace)}</strong> stops working and whoever is using it is disconnected. The new link becomes the
-            only editor.
+            The editor link <strong>{grantName(confirmReplace)}</strong> stops
+            working and whoever is using it is disconnected. The new link
+            becomes the only editor.
           </p>
         </ConfirmDialog>
       )}
@@ -205,7 +296,8 @@ export function GrantsPanel({ terminalId, compact = false }: { terminalId: strin
           }}
         >
           <p>
-            <strong>{grantName(revoking)}</strong> stops working, and anyone using it is disconnected immediately.
+            <strong>{grantName(revoking)}</strong> stops working, and anyone
+            using it is disconnected immediately.
           </p>
         </ConfirmDialog>
       )}

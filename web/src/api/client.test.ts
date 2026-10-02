@@ -15,7 +15,11 @@ function fakeFetch(respond: (call: Call) => Response | Promise<Response>) {
   return { fetchImpl, calls }
 }
 
-function json(status: number, body: unknown, headers: Record<string, string> = {}) {
+function json(
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'Content-Type': 'application/json', ...headers },
@@ -29,7 +33,9 @@ describe('api client', () => {
     const { fetchImpl, calls } = fakeFetch(() => json(200, { id: 't1' }))
     const client = createApiClient({ fetch: fetchImpl, csrf: () => 'csrf-1' })
 
-    await expect(client.get('/api/v1/admin/terminals/t1', idOnly)).resolves.toEqual({ id: 't1' })
+    await expect(
+      client.get('/api/v1/admin/terminals/t1', idOnly),
+    ).resolves.toEqual({ id: 't1' })
 
     const headers = new Headers(calls[0].init.headers)
     expect(calls[0].init.method).toBe('GET')
@@ -54,7 +60,9 @@ describe('api client', () => {
   test('no content responses resolve to undefined', async () => {
     const { fetchImpl } = fakeFetch(() => new Response(null, { status: 204 }))
     const client = createApiClient({ fetch: fetchImpl })
-    await expect(client.post('/api/v1/admin/logout', undefined)).resolves.toBeUndefined()
+    await expect(
+      client.post('/api/v1/admin/logout', undefined),
+    ).resolves.toBeUndefined()
   })
 
   test('coded server errors keep status, code, and the fixed server message', async () => {
@@ -63,10 +71,16 @@ describe('api client', () => {
     )
     const client = createApiClient({ fetch: fetchImpl })
 
-    const error = await client.get('/api/v1/admin/recordings/r1', idOnly).catch((e: unknown) => e)
+    const error = await client
+      .get('/api/v1/admin/recordings/r1', idOnly)
+      .catch((e: unknown) => e)
 
     expect(error).toBeInstanceOf(ApiError)
-    expect(error).toMatchObject({ status: 410, code: 'recording_deleted', message: 'recording was deleted' })
+    expect(error).toMatchObject({
+      status: 410,
+      code: 'recording_deleted',
+      message: 'recording was deleted',
+    })
   })
 
   test.each([
@@ -81,13 +95,20 @@ describe('api client', () => {
   ])('uncoded %i %s maps to %s', async (status, message, code) => {
     const { fetchImpl } = fakeFetch(() => json(status, { error: message }))
     const client = createApiClient({ fetch: fetchImpl })
-    await expect(client.get('/x', idOnly)).rejects.toMatchObject({ status, code })
+    await expect(client.get('/x', idOnly)).rejects.toMatchObject({
+      status,
+      code,
+    })
   })
 
   test('throttling exposes Retry-After seconds', async () => {
-    const { fetchImpl } = fakeFetch(() => json(429, { error: 'too many attempts' }, { 'Retry-After': '60' }))
+    const { fetchImpl } = fakeFetch(() =>
+      json(429, { error: 'too many attempts' }, { 'Retry-After': '60' }),
+    )
     const client = createApiClient({ fetch: fetchImpl })
-    await expect(client.post('/api/v1/admin/login', { password: 'x' })).rejects.toMatchObject({
+    await expect(
+      client.post('/api/v1/admin/login', { password: 'x' }),
+    ).rejects.toMatchObject({
       code: 'rate_limited',
       retryAfterSeconds: 60,
     })
@@ -104,7 +125,9 @@ describe('api client', () => {
       .catch((e: unknown) => e)) as ApiError
 
     expect(error).toMatchObject({ status: 0, code: 'offline' })
-    expect(JSON.stringify({ ...error, message: error.message })).not.toContain('hunter2-secret')
+    expect(JSON.stringify({ ...error, message: error.message })).not.toContain(
+      'hunter2-secret',
+    )
   })
 
   test('aborts propagate as abort errors, not API errors', async () => {
@@ -116,7 +139,9 @@ describe('api client', () => {
     const controller = new AbortController()
     controller.abort()
 
-    const error = await client.get('/x', idOnly, controller.signal).catch((e: unknown) => e)
+    const error = await client
+      .get('/x', idOnly, controller.signal)
+      .catch((e: unknown) => e)
 
     expect(isAbortError(error)).toBe(true)
     expect(error).not.toBeInstanceOf(ApiError)
@@ -125,12 +150,19 @@ describe('api client', () => {
   test('responses that do not match the expected shape are rejected', async () => {
     const { fetchImpl } = fakeFetch(() => json(200, { id: 42 }))
     const client = createApiClient({ fetch: fetchImpl })
-    await expect(client.get('/x', idOnly)).rejects.toMatchObject({ code: 'invalid_response' })
+    await expect(client.get('/x', idOnly)).rejects.toMatchObject({
+      code: 'invalid_response',
+    })
   })
 
   test('non-JSON error bodies still produce a typed error', async () => {
-    const { fetchImpl } = fakeFetch(() => new Response('404 page not found\n', { status: 404 }))
+    const { fetchImpl } = fakeFetch(
+      () => new Response('404 page not found\n', { status: 404 }),
+    )
     const client = createApiClient({ fetch: fetchImpl })
-    await expect(client.get('/x', idOnly)).rejects.toMatchObject({ status: 404, code: 'not_found' })
+    await expect(client.get('/x', idOnly)).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    })
   })
 })
