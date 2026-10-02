@@ -26,8 +26,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Vet (macOS and Linux)
-        run: make vet
+      - name: gofmt and vet (macOS and Linux)
+        run: make gofmt-check && make vet
       - name: Race tests
         run: make test-race
       - name: Repeated race tests of the concurrency packages

@@ -182,7 +182,7 @@ in [docs/configuration.md](docs/configuration.md).
 
 ```sh
 make web-install   # npm ci for the web UI
-make check         # vet, race tests, cross builds, frontend checks, vulnerability and secret scans, release lint
+make check         # formatting, vet, race tests, cross builds, frontend checks, vulnerability and secret scans, release lint
 make e2e           # Chromium and WebKit end-to-end and accessibility suites
 make snapshot      # local release archives and formula in dist/ with checksum, SBOM, and clean-install checks
 ```

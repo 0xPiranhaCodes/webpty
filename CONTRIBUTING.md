@@ -37,6 +37,28 @@ refactoring, and add or update tests for behavior changes. Preserve webpty's
 security defaults and call out any security or privacy implications in the
 pull request.
 
+## Tooling
+
+Each check has one tool and one command. `make check` runs all of them;
+CI runs the same targets.
+
+| Concern | Tool | Run alone |
+| --- | --- | --- |
+| Go formatting | gofmt | `make gofmt-check`, fix with `make fmt` |
+| Web formatting | [Prettier](https://prettier.io) (`web/.prettierrc`) | `cd web && npm run format:check`, fix with `make fmt` |
+| Go static analysis | `go vet` on macOS and Linux | `make vet` |
+| Web lint | [ESLint](https://eslint.org) (`web/eslint.config.js`) | `cd web && npm run lint` |
+| Web types | `tsc --noEmit` | `cd web && npm run typecheck` |
+| Go tests | `go test`, with `-race` and repeated runs of the concurrency packages | `make test-race`, `make test-race-repeat`; one package: `go test ./internal/<pkg>/ -run <Name>` |
+| Web unit tests | [Vitest](https://vitest.dev) with the fakes in `web/src/test` | `cd web && npm test`; one file: `cd web && npx vitest run <path>` |
+| Browser tests | [Playwright](https://playwright.dev), Chromium and WebKit, with axe accessibility checks | `make e2e`, `make e2e-chromium`, `make a11y` |
+| Dependencies and secrets | govulncheck, `npm audit`, gitleaks | `make vuln`, `make secrets` |
+| Shell, Dockerfile, workflows | shellcheck, hadolint, actionlint | `make release-lint` |
+
+Run `make fmt` before committing; `make check` fails on unformatted files.
+Editor integrations for gofmt and Prettier work with the checked-in
+configuration and need no extra settings.
+
 ## Validate your change
 
 Run the same primary checks used by continuous integration:
@@ -46,9 +68,9 @@ make check
 make e2e
 ```
 
-`make check` runs Go vet and race tests, cross-platform builds, frontend lint,
-type checks, tests and builds, vulnerability and secret scans, and release
-linting. If hadolint is unavailable locally, use the Docker override documented
+`make check` runs the gofmt check, Go vet and race tests, cross-platform
+builds, the Prettier check, frontend lint, type checks, tests and builds,
+vulnerability and secret scans, and release linting. If hadolint is unavailable locally, use the Docker override documented
 in the README. `make e2e` runs the Chromium and WebKit end-to-end and
 accessibility suites.
 

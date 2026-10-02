@@ -1,6 +1,7 @@
 # Test and verification entry points. CI runs these same targets.
 #
 #   make check        everything except the browser suites
+#   make fmt          gofmt the Go sources and Prettier the web tree
 #   make e2e          browser end-to-end and accessibility suites (Chromium and WebKit)
 #   make build        bin/webpty with the web UI embedded
 #   make snapshot     local release archives in dist/, verified; nothing published
@@ -12,6 +13,7 @@
 # make homebrew-validate needs Homebrew; the docker targets need a Docker daemon.
 
 GO ?= go
+GOFMT ?= gofmt
 NPM ?= npm
 NODE_VERSION ?= 22.23.2
 GOVULNCHECK_VERSION ?= v1.8.0
@@ -41,13 +43,14 @@ PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 VET_OSES := darwin linux
 CONCURRENCY_PACKAGES := ./internal/app/... ./internal/session/... ./internal/httpapi/... ./internal/collab/... ./internal/access/... ./internal/recording/...
 INTEGRATION_PACKAGES := ./internal/app/... ./internal/httpapi/... ./internal/store/... ./internal/recording/...
+GO_SOURCES := $(shell git ls-files '*.go')
 
-.PHONY: check test test-unit test-integration test-race test-race-repeat vet build-cross \
+.PHONY: check fmt fmt-check gofmt-check test test-unit test-integration test-race test-race-repeat vet build-cross \
 	web-install web-check e2e e2e-chromium e2e-webkit a11y vuln vuln-go vuln-npm secrets \
 	web-assets build snapshot verify-archives homebrew-validate release-lint docker-build docker-smoke \
 	image-binaries docker-release-smoke
 
-check: vet test-race test-race-repeat build-cross web-check vuln secrets release-lint
+check: gofmt-check vet test-race test-race-repeat build-cross web-check vuln secrets release-lint
 
 test: test-unit test-integration
 
@@ -67,6 +70,18 @@ test-race:
 test-race-repeat:
 	$(GO) test -race -count=$(RACE_COUNT) $(CONCURRENCY_PACKAGES)
 
+## Formatting: gofmt for Go, Prettier for the web tree. "make fmt" rewrites.
+fmt:
+	$(GOFMT) -l -w $(GO_SOURCES)
+	cd web && $(NPM) run format
+
+fmt-check: gofmt-check
+	cd web && $(NPM) run format:check
+
+## Go only, so the Go CI job can run it without Node.js; web-check covers Prettier.
+gofmt-check:
+	@files=$$($(GOFMT) -l $(GO_SOURCES)); if [ -n "$$files" ]; then echo "gofmt: run make fmt" >&2; echo "$$files" >&2; exit 1; fi
+
 vet:
 	@set -e; for os in $(VET_OSES); do echo "GOOS=$$os go vet ./..."; GOOS=$$os $(GO) vet ./...; done
 
@@ -81,6 +96,7 @@ web-install:
 	cd web && $(NPM) ci
 
 web-check:
+	cd web && $(NPM) run format:check
 	cd web && $(NPM) run lint -- --max-warnings=0
 	cd web && $(NPM) run typecheck
 	cd web && $(NPM) test
