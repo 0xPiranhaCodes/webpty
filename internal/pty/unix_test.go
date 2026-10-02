@@ -101,10 +101,16 @@ func alive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
+// Children wait for a line of input before exiting: on macOS, output still
+// buffered in the PTY when the child exits can be discarded before the
+// parent reads it, so a command that exits at once races the reader.
 func TestUnixProducesOutputAndExitCode(t *testing.T) {
-	p := start(t, pty.Size{Rows: 24, Cols: 80}, "/bin/sh", "-c", "echo hello-pty; exit 3")
+	p := start(t, pty.Size{Rows: 24, Cols: 80}, "/bin/sh", "-c", "echo hello-pty; read -r _; exit 3")
 	out := collect(p)
 	out.waitFor(t, "hello-pty")
+	if _, err := p.Write([]byte("\n")); err != nil {
+		t.Fatal(err)
+	}
 	status := wait(t, p)
 	if status.Code != 3 || status.Signal != "" {
 		t.Fatalf("status = %+v, want code 3", status)
@@ -112,9 +118,14 @@ func TestUnixProducesOutputAndExitCode(t *testing.T) {
 }
 
 func TestUnixDoesNotInterpretArgumentsWithAShell(t *testing.T) {
-	p := start(t, pty.Size{Rows: 24, Cols: 80}, "/bin/echo", "$HOME", "a;b", "`id`")
+	// The arguments reach the script as positional parameters; a shell
+	// wrapper around the command line would expand them first.
+	p := start(t, pty.Size{Rows: 24, Cols: 80}, "/bin/sh", "-c", `printf '%s ' "$@"; read -r _`, "sh", "$HOME", "a;b", "`id`")
 	out := collect(p)
-	out.waitFor(t, "$HOME a;b `id`")
+	out.waitFor(t, "$HOME a;b `id` ")
+	if _, err := p.Write([]byte("\n")); err != nil {
+		t.Fatal(err)
+	}
 	wait(t, p)
 }
 
