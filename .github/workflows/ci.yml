@@ -119,11 +119,19 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+      # setup-go sets GOTOOLCHAIN=local, so the Makefile's "go install" of
+      # goreleaser cannot fetch the newer Go it needs; use the same pinned
+      # binary release.yml uses and hand it to make.
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.18.2
+          install-only: true
       - name: Workflow, shell, and Dockerfile lint
         if: runner.os == 'Linux'
         run: make release-lint HADOLINT="docker run --rm -i hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d hadolint -" HADOLINT_INPUT="< Dockerfile"
       - name: Snapshot archives, checksums, SBOMs, formula, and clean-install checks
-        run: make snapshot
+        run: make snapshot GORELEASER="$(command -v goreleaser)"
       - name: Install, test, and upgrade the snapshot with Homebrew
         if: runner.os == 'macOS'
         run: make homebrew-validate

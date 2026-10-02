@@ -23,6 +23,8 @@ ACTIONLINT_VERSION ?= v1.7.12
 # goreleaser needs a newer Go than go.mod pins. "go run" would hand that
 # toolchain to the builds goreleaser starts, so goreleaser is installed as a
 # binary and the release builds use go.mod's toolchain, as in release.yml.
+# That install relies on Go's toolchain auto-download; where it is disabled
+# (actions/setup-go), pass an installed binary: make snapshot GORELEASER=$(command -v goreleaser).
 TOOLS := $(CURDIR)/bin/tools
 GORELEASER ?= $(TOOLS)/goreleaser-$(GORELEASER_VERSION)
 ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
