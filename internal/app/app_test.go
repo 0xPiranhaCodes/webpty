@@ -20,9 +20,20 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/0xPiranhaCodes/webpty/internal/app"
+	"github.com/0xPiranhaCodes/webpty/internal/auth"
 	"github.com/0xPiranhaCodes/webpty/internal/config"
 	"github.com/0xPiranhaCodes/webpty/internal/store"
 )
+
+// Serve hashes passwords with the production Argon2id cost, which under the
+// race detector on a loaded runner can exceed the short server timeouts
+// some tests configure. Serve reads the default once per start, and the
+// tests here run sequentially, so the cheap parameters the auth and HTTP
+// API tests use are set once for the package.
+func TestMain(m *testing.M) {
+	auth.DefaultPasswordParams = auth.PasswordParams{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32}
+	os.Exit(m.Run())
+}
 
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
