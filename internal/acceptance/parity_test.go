@@ -62,20 +62,28 @@ func externalIPv4(t *testing.T) []string {
 }
 
 func TestLegacyPortAndCommandFlags(t *testing.T) {
-	for _, flags := range [][]string{{"-c", "/bin/echo"}, {"--cmd=/bin/echo"}} {
+	// The command prints its arguments and then waits for a line of input,
+	// so it is still running when the test attaches: /bin/echo alone exits
+	// before the WebSocket handshake on a fast machine. The arguments reach
+	// the script as positional parameters, so a shell wrapper around the
+	// command line would expand them and the literal check below would fail.
+	script := `printf '%s\n' "$@"; read -r _`
+	for _, flags := range [][]string{{"-c", "/bin/sh"}, {"--cmd=/bin/sh"}} {
 		t.Run(strings.Join(flags, " "), func(t *testing.T) {
 			port := freePort(t)
 			args := append([]string{"--port=" + fmt.Sprint(port)}, flags...)
-			args = append(args, "--", "parity-$HOME", "`id`")
+			args = append(args, "--", "-c", script, "sh", "parity-$HOME", "`id`")
 			s := startOn(t, port, env(dataDir(t)), args...)
 			c := admin(t, s)
 			created := c.createTerminal(`{}`)
-			if created["command"] != "/bin/echo" {
+			if created["command"] != "/bin/sh" {
 				t.Fatalf("command = %v", created["command"])
 			}
 			term := c.attach(created["id"].(string))
+			term.until(func(msg map[string]any) bool { return strings.Contains(term.output.String(), "`id`") })
+			term.input("\n")
 			exit := term.until(func(msg map[string]any) bool { return msg["type"] == "exit" })
-			if !strings.Contains(term.output.String(), "parity-$HOME `id`") {
+			if !strings.Contains(term.output.String(), "parity-$HOME\r\n`id`") {
 				t.Errorf("output = %q, want the arguments passed literally, without a shell", term.output.String())
 			}
 			if exit["exitCode"] != float64(0) {
