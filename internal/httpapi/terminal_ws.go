@@ -384,6 +384,10 @@ func (s *terminalStream) serve(ctx context.Context, sub *session.Subscription) {
 	streamCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	s.stop = stop
+	// Writes are bounded by the write timeout rather than by streamCtx: the
+	// library closes the connection outright when an in-flight write's
+	// context is cancelled, which would lose the close frame that end() chose.
+	writeCtx := context.WithoutCancel(streamCtx)
 
 	readerDone := make(chan struct{})
 	go func() {
@@ -402,7 +406,7 @@ func (s *terminalStream) serve(ctx context.Context, sub *session.Subscription) {
 		info = toTerminalJSON(sub.Info())
 	}
 	role := s.participant.Role()
-	if err := s.write(streamCtx, readyMessage{Type: "ready", Version: protocolVersion,
+	if err := s.write(writeCtx, readyMessage{Type: "ready", Version: protocolVersion,
 		Session: info, Seq: sub.LastSeq(), Role: role, Permissions: permissionsFor(role)}); err != nil {
 		s.end(0, "")
 	}
@@ -424,16 +428,16 @@ func (s *terminalStream) serve(ctx context.Context, sub *session.Subscription) {
 				s.end(closeStatusFor(err))
 			}
 		case event.Kind == session.EventOutput:
-			if err := s.write(streamCtx, outputMessage{Type: "output", Seq: event.Seq,
+			if err := s.write(writeCtx, outputMessage{Type: "output", Seq: event.Seq,
 				Data: base64.StdEncoding.EncodeToString(event.Data)}); err != nil {
 				s.end(0, "")
 			}
 		case event.Kind == session.EventResize:
-			if err := s.write(streamCtx, resizeMessage{Type: "resize", Rows: event.Rows, Cols: event.Cols}); err != nil {
+			if err := s.write(writeCtx, resizeMessage{Type: "resize", Rows: event.Rows, Cols: event.Cols}); err != nil {
 				s.end(0, "")
 			}
 		case event.Kind == session.EventExit:
-			if err := s.write(streamCtx, exitMessage{Type: "exit", State: string(event.Exit.State),
+			if err := s.write(writeCtx, exitMessage{Type: "exit", State: string(event.Exit.State),
 				ExitCode: event.Exit.Code, Signal: event.Exit.Signal}); err != nil {
 				s.end(0, "")
 				break
@@ -659,7 +663,10 @@ func (s *terminalStream) heartbeat(ctx context.Context) {
 			s.end(CloseUnauthorized, "session expired")
 			return
 		}
-		pingCtx, cancel := context.WithTimeout(ctx, s.api.settings.WriteTimeout)
+		// A ping whose context is cancelled mid-flight tears down the
+		// connection, losing the close frame of whoever ended the stream;
+		// the write timeout bounds it instead.
+		pingCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.api.settings.WriteTimeout)
 		err := s.conn.Ping(pingCtx)
 		cancel()
 		if err != nil && ctx.Err() == nil {
