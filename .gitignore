@@ -32,3 +32,4 @@ web/e2e/.artifacts/
 
 # Agent workspace
 .superpowers/
+.agents/work/
