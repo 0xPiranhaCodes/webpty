@@ -23,10 +23,9 @@ install or host.
 
 ![A webpty terminal workspace with the sharing panel](docs/images/terminal.png)
 
-> **Status:** webpty 1.0 is in release candidate. It is a complete rewrite in
-> Go of the original webpty; see
-> [docs/migrating-from-python.md](docs/migrating-from-python.md) if you ran
-> an earlier version.
+> webpty 1.0 is a complete rewrite in Go of the original webpty. If you ran
+> an earlier version, see
+> [docs/migrating-from-python.md](docs/migrating-from-python.md).
 
 ## What you get
 
@@ -73,30 +72,27 @@ once, at creation; the database stores only their hashes.
 ## Install
 
 Releases ship for macOS and Linux on amd64 and arm64. Windows is not
-supported natively; use WSL or Docker. The commands below install
-`1.0.0-rc.1`, the current release candidate; a release candidate is never
-`latest`, so the version is always spelled out.
+supported natively; use WSL or Docker.
 
 **Install script** (verifies the checksum; no root needed; installs to `~/.local/bin`):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/0xPiranhaCodes/webpty/v1.0.0-rc.1/scripts/install.sh | sh -s -- --version 1.0.0-rc.1
-# another directory:
-curl -fsSL https://raw.githubusercontent.com/0xPiranhaCodes/webpty/v1.0.0-rc.1/scripts/install.sh | sh -s -- --version 1.0.0-rc.1 --bin-dir "$HOME/bin"
+curl -fsSL https://raw.githubusercontent.com/0xPiranhaCodes/webpty/main/scripts/install.sh | sh
+# or a specific version and directory:
+curl -fsSL https://raw.githubusercontent.com/0xPiranhaCodes/webpty/v1.0.0/scripts/install.sh | sh -s -- --version 1.0.0 --bin-dir "$HOME/bin"
 ```
-
-Once a stable release exists, dropping `--version` installs the latest one.
 
 **Homebrew**: each release attaches a signed `webpty.rb` formula. Homebrew
 installs formulae only from taps, so `homebrew-tap.sh` keeps one on this
 machine (`webpty-local/webpty`), verifies the formula against the release's
 checksums and their Sigstore signature, then installs that one formula. It
 needs [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
-(`brew install cosign`):
+(`brew install cosign`). Download the helper from the tag of the release
+you install; each release's notes give the exact commands:
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/0xPiranhaCodes/webpty/v1.0.0-rc.1/scripts/homebrew-tap.sh
-sh homebrew-tap.sh --version 1.0.0-rc.1
+curl -fsSLO https://raw.githubusercontent.com/0xPiranhaCodes/webpty/v1.0.0/scripts/homebrew-tap.sh
+sh homebrew-tap.sh --version 1.0.0
 ```
 
 To upgrade, run the same two commands for the new version. The signature must
@@ -107,13 +103,13 @@ see [docs/upgrading.md](docs/upgrading.md#homebrew).
 **Docker** (database on the `/data` volume, runs as an unprivileged user):
 
 ```sh
-docker run -d --name webpty -p 127.0.0.1:8000:8000 -v webpty-data:/data ghcr.io/0xpiranhacodes/webpty:1.0.0-rc.1
+docker run -d --name webpty -p 127.0.0.1:8000:8000 -v webpty-data:/data ghcr.io/0xpiranhacodes/webpty:latest
 ```
 
 **Binary archive**:
 
 ```sh
-VERSION=1.0.0-rc.1
+VERSION=1.0.0
 curl -fsSLO https://github.com/0xPiranhaCodes/webpty/releases/download/v$VERSION/webpty_${VERSION}_darwin_arm64.tar.gz
 curl -fsSLO https://github.com/0xPiranhaCodes/webpty/releases/download/v$VERSION/webpty_${VERSION}_checksums.txt
 shasum -a 256 --check --ignore-missing webpty_${VERSION}_checksums.txt
