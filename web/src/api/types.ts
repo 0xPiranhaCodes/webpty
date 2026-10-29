@@ -30,6 +30,10 @@ export const terminalStates = [
 ] as const
 export type TerminalState = (typeof terminalStates)[number]
 
+/** A terminal that is running or about to run, so it can still be joined. */
+export const isLiveState = (state: TerminalState) =>
+  state === 'running' || state === 'starting'
+
 export const decodeTerminal = object({
   id: str,
   state: oneOf(...terminalStates),

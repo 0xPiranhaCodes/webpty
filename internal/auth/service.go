@@ -117,15 +117,9 @@ func (e *ThrottledError) Is(target error) bool { return target == ErrThrottled }
 // still current.
 func (s *Service) Login(ctx context.Context, password, remoteAddr string) (Session, error) {
 	now := s.config.Now()
-	if decision := s.config.Throttle.Check(ThrottleKey(remoteAddr)); !decision.Allowed {
-		if decision.FirstDenial {
-			if err := s.audit(ctx, now, "admin.login.throttled", remoteAddr, nil); err != nil {
-				return Session{}, err
-			}
-		}
-		return Session{}, &ThrottledError{RetryAfter: decision.RetryAfter}
+	if err := s.checkLoginThrottle(ctx, now, remoteAddr); err != nil {
+		return Session{}, err
 	}
-
 	snapshot, err := s.snapshotCredential(ctx)
 	if err != nil {
 		return Session{}, err
@@ -138,17 +132,11 @@ func (s *Service) Login(ctx context.Context, password, remoteAddr string) (Sessi
 	if !valid {
 		return Session{}, s.loginFailure(ctx, now, remoteAddr, "invalid_password")
 	}
-
 	session, err := s.issue(snapshot.sessionKind(), now)
 	if err != nil {
 		return Session{}, err
 	}
-	err = s.config.Store.WithTx(ctx, func(tx *store.Tx) error {
-		if err := snapshot.stillCurrent(ctx, tx); err != nil {
-			return err
-		}
-		return tx.CreateAdminSession(ctx, s.record(session, now))
-	})
+	err = s.persistLogin(ctx, snapshot, session, now)
 	if errors.Is(err, errCredentialChanged) {
 		return Session{}, s.loginFailure(ctx, now, remoteAddr, "credential_changed")
 	}
@@ -159,6 +147,32 @@ func (s *Service) Login(ctx context.Context, password, remoteAddr string) (Sessi
 		return Session{}, err
 	}
 	return session, nil
+}
+
+// checkLoginThrottle refuses a throttled address, auditing only the first
+// denial so a flood of attempts cannot flood the audit log.
+func (s *Service) checkLoginThrottle(ctx context.Context, now time.Time, remoteAddr string) error {
+	decision := s.config.Throttle.Check(ThrottleKey(remoteAddr))
+	if decision.Allowed {
+		return nil
+	}
+	if decision.FirstDenial {
+		if err := s.audit(ctx, now, "admin.login.throttled", remoteAddr, nil); err != nil {
+			return err
+		}
+	}
+	return &ThrottledError{RetryAfter: decision.RetryAfter}
+}
+
+// persistLogin stores session only if the credential it was verified
+// against is still current.
+func (s *Service) persistLogin(ctx context.Context, snapshot credentialSnapshot, session Session, now time.Time) error {
+	return s.config.Store.WithTx(ctx, func(tx *store.Tx) error {
+		if err := snapshot.stillCurrent(ctx, tx); err != nil {
+			return err
+		}
+		return tx.CreateAdminSession(ctx, s.record(session, now))
+	})
 }
 
 func (s *Service) loginFailure(ctx context.Context, now time.Time, remoteAddr, reason string) error {
@@ -205,40 +219,15 @@ func (s *Service) ChangePassword(ctx context.Context, token, currentPassword, ne
 	if !validNewPassword(newPassword) {
 		return Session{}, ErrInvalidNewPassword
 	}
-
 	now := s.config.Now()
 	tokenHash := hashToken(token)
-	bySession := s.config.PasswordSessionThrottle.Check(hex.EncodeToString(tokenHash))
-	byIP := s.config.PasswordThrottle.Check(ThrottleKey(remoteAddr))
-	if !bySession.Allowed || !byIP.Allowed {
-		if bySession.FirstDenial || byIP.FirstDenial {
-			if err := s.audit(ctx, now, "admin.password.throttled", remoteAddr, nil); err != nil {
-				return Session{}, err
-			}
-		}
-		return Session{}, &ThrottledError{RetryAfter: max(bySession.RetryAfter, byIP.RetryAfter)}
+	if err := s.checkPasswordThrottle(ctx, now, tokenHash, remoteAddr); err != nil {
+		return Session{}, err
 	}
-
-	snapshot, err := s.snapshotCredential(ctx)
+	snapshot, err := s.verifyCurrentPassword(ctx, now, current.Kind, currentPassword, remoteAddr)
 	if err != nil {
 		return Session{}, err
 	}
-	if snapshot.sessionKind() != current.Kind {
-		return Session{}, ErrUnauthenticated
-	}
-	run(s.hooks.passwordChangeVerify)
-	valid, err := snapshot.verify(currentPassword)
-	if err != nil {
-		return Session{}, err
-	}
-	if !valid {
-		if err := s.audit(ctx, now, "admin.password.failure", remoteAddr, map[string]string{"reason": "invalid_current_password"}); err != nil {
-			return Session{}, err
-		}
-		return Session{}, ErrInvalidCredentials
-	}
-	run(s.hooks.passwordChangeVerified)
-
 	encoded, err := HashPassword(newPassword, s.config.PasswordParams)
 	if err != nil {
 		return Session{}, err
@@ -247,9 +236,71 @@ func (s *Service) ChangePassword(ctx context.Context, token, currentPassword, ne
 	if err != nil {
 		return Session{}, err
 	}
-	err = s.config.Store.WithTx(ctx, func(tx *store.Tx) error {
-		live, err := tx.AdminSession(ctx, tokenHash, now)
-		if errors.Is(err, store.ErrNotFound) || (err == nil && live.Kind != current.Kind) {
+	if err := s.rotateCredential(ctx, snapshot, rotation{tokenHash, current.Kind, encoded, fresh}, now); err != nil {
+		return Session{}, err
+	}
+	if err := s.audit(ctx, now, "admin.password.changed", remoteAddr, map[string]string{"fromSessionKind": string(current.Kind)}); err != nil {
+		return Session{}, err
+	}
+	return fresh, nil
+}
+
+// checkPasswordThrottle limits attempts both per session and per address,
+// so neither a stolen session nor many sessions from one host can guess freely.
+func (s *Service) checkPasswordThrottle(ctx context.Context, now time.Time, tokenHash []byte, remoteAddr string) error {
+	bySession := s.config.PasswordSessionThrottle.Check(hex.EncodeToString(tokenHash))
+	byIP := s.config.PasswordThrottle.Check(ThrottleKey(remoteAddr))
+	if bySession.Allowed && byIP.Allowed {
+		return nil
+	}
+	if bySession.FirstDenial || byIP.FirstDenial {
+		if err := s.audit(ctx, now, "admin.password.throttled", remoteAddr, nil); err != nil {
+			return err
+		}
+	}
+	return &ThrottledError{RetryAfter: max(bySession.RetryAfter, byIP.RetryAfter)}
+}
+
+// verifyCurrentPassword checks currentPassword against a credential
+// snapshot taken outside any write transaction.
+func (s *Service) verifyCurrentPassword(ctx context.Context, now time.Time, kind store.SessionKind, currentPassword, remoteAddr string) (credentialSnapshot, error) {
+	snapshot, err := s.snapshotCredential(ctx)
+	if err != nil {
+		return credentialSnapshot{}, err
+	}
+	if snapshot.sessionKind() != kind {
+		return credentialSnapshot{}, ErrUnauthenticated
+	}
+	run(s.hooks.passwordChangeVerify)
+	valid, err := snapshot.verify(currentPassword)
+	if err != nil {
+		return credentialSnapshot{}, err
+	}
+	if !valid {
+		if err := s.audit(ctx, now, "admin.password.failure", remoteAddr, map[string]string{"reason": "invalid_current_password"}); err != nil {
+			return credentialSnapshot{}, err
+		}
+		return credentialSnapshot{}, ErrInvalidCredentials
+	}
+	run(s.hooks.passwordChangeVerified)
+	return snapshot, nil
+}
+
+// rotation is what one password change writes.
+type rotation struct {
+	tokenHash   []byte
+	sessionKind store.SessionKind
+	encoded     string
+	fresh       Session
+}
+
+// rotateCredential commits the new credential, revokes every session, and
+// stores the fresh one, but only if the caller's session and the verified
+// credential are both still current.
+func (s *Service) rotateCredential(ctx context.Context, snapshot credentialSnapshot, r rotation, now time.Time) error {
+	err := s.config.Store.WithTx(ctx, func(tx *store.Tx) error {
+		live, err := tx.AdminSession(ctx, r.tokenHash, now)
+		if errors.Is(err, store.ErrNotFound) || (err == nil && live.Kind != r.sessionKind) {
 			return ErrUnauthenticated
 		}
 		if err != nil {
@@ -258,24 +309,18 @@ func (s *Service) ChangePassword(ctx context.Context, token, currentPassword, ne
 		if err := snapshot.stillCurrent(ctx, tx); err != nil {
 			return err
 		}
-		if err := tx.SetAdminCredential(ctx, encoded, now); err != nil {
+		if err := tx.SetAdminCredential(ctx, r.encoded, now); err != nil {
 			return err
 		}
 		if err := tx.DeleteAllAdminSessions(ctx); err != nil {
 			return err
 		}
-		return tx.CreateAdminSession(ctx, s.record(fresh, now))
+		return tx.CreateAdminSession(ctx, s.record(r.fresh, now))
 	})
 	if errors.Is(err, errCredentialChanged) {
-		return Session{}, ErrUnauthenticated
+		return ErrUnauthenticated
 	}
-	if err != nil {
-		return Session{}, err
-	}
-	if err := s.audit(ctx, now, "admin.password.changed", remoteAddr, map[string]string{"fromSessionKind": string(current.Kind)}); err != nil {
-		return Session{}, err
-	}
-	return fresh, nil
+	return err
 }
 
 // credentialSnapshot is the credential state a password was verified against.

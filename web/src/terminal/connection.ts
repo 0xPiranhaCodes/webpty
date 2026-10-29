@@ -75,8 +75,19 @@ export interface ConnectionOptions {
 
 const baseDelayMs = 500
 const maxDelayMs = 10_000
+// Random spread added to each backoff so many tabs don't reconnect in lockstep.
+const maxJitterMs = 250
 const pingIntervalMs = 25_000
 const pongTimeoutMs = 10_000
+
+// WebSocket.readyState values, named here because WebSocketLike may not be a real WebSocket.
+const socketOpen = 1
+const socketClosing = 2
+
+// Close codes and reasons the client itself produces.
+const abnormalClosure = 1006
+const reconnectCloseCode = 4000
+const sessionEndedReason = 'session ended'
 
 const closeReasons: Record<string, EndReason> = {
   'access revoked': 'revoked',
@@ -141,7 +152,10 @@ export class TerminalConnection {
   }
 
   private isLive() {
-    return this.currentState.kind === 'live' && this.socket?.readyState === 1
+    return (
+      this.currentState.kind === 'live' &&
+      this.socket?.readyState === socketOpen
+    )
   }
 
   private setState(state: ConnectionState) {
@@ -166,6 +180,11 @@ export class TerminalConnection {
     this.socket = socket
     this.opened = false
     this.revokedReason = undefined
+    this.attachListeners(socket)
+  }
+
+  // Every listener ignores events from a socket that has since been replaced.
+  private attachListeners(socket: WebSocketLike) {
     socket.onopen = () => {
       if (this.socket !== socket) return
       this.opened = true
@@ -187,26 +206,12 @@ export class TerminalConnection {
   private handle(message: ServerMessage) {
     const h = this.options.handlers
     switch (message.type) {
-      case 'ready': {
-        const fresh = this.lastSeq === null
-        this.attempt = 0
-        this.currentPermissions = message.permissions
-        this.setState({ kind: 'live' })
-        h.onReady?.(message, fresh)
-        h.onPermissions?.(message.permissions)
-        return
-      }
+      case 'ready':
+        return this.onReadyMessage(message)
       case 'output':
-        if (this.lastSeq !== null && message.seq <= this.lastSeq) return
-        this.lastSeq = message.seq
-        h.onOutput?.(message.data, message.seq)
-        return
+        return this.onOutputMessage(message.data, message.seq)
       case 'exit':
-        this.exit = message
-        this.currentPermissions = noPermissions
-        h.onPermissions?.(noPermissions)
-        h.onExit?.(message)
-        return
+        return this.onExitMessage(message)
       case 'resize':
         h.onResize?.(message.rows, message.cols)
         return
@@ -228,6 +233,29 @@ export class TerminalConnection {
       default:
         this.applyPresence(message)
     }
+  }
+
+  private onReadyMessage(message: ReadyMessage) {
+    const fresh = this.lastSeq === null
+    this.attempt = 0
+    this.currentPermissions = message.permissions
+    this.setState({ kind: 'live' })
+    this.options.handlers.onReady?.(message, fresh)
+    this.options.handlers.onPermissions?.(message.permissions)
+  }
+
+  // Replayed output the client already rendered is dropped by sequence number.
+  private onOutputMessage(data: Uint8Array, seq: number) {
+    if (this.lastSeq !== null && seq <= this.lastSeq) return
+    this.lastSeq = seq
+    this.options.handlers.onOutput?.(data, seq)
+  }
+
+  private onExitMessage(message: ExitMessage) {
+    this.exit = message
+    this.currentPermissions = noPermissions
+    this.options.handlers.onPermissions?.(noPermissions)
+    this.options.handlers.onExit?.(message)
   }
 
   private applyPresence(
@@ -263,61 +291,66 @@ export class TerminalConnection {
     h.onPresence?.(this.participants, this.selfId)
   }
 
+  // Decides whether a closed socket ends the session for good or is retried.
   private onClosed(code: number, reason: string) {
     const opened = this.opened
     this.detach()
     if (this.stopped) return
     if (
       this.exit ||
-      (code === CloseCode.Normal && reason === 'session ended')
-    ) {
-      const exit = this.exit
-      this.end(
-        'exited',
-        exit
-          ? {
-              state: exit.state,
-              exitCode: exit.exitCode,
-              ...(exit.signal ? { signal: exit.signal } : {}),
-            }
-          : undefined,
-      )
-      return
-    }
-    if (code === CloseCode.Unauthorized) {
-      const why =
-        closeReasons[reason] ??
-        (this.revokedReason
-          ? closeReasons[`access ${this.revokedReason}`]
-          : undefined)
-      this.end(why ?? 'unauthorized')
-      return
-    }
-    if (code === CloseCode.PolicyViolation) {
-      this.end('closed')
-      return
-    }
+      (code === CloseCode.Normal && reason === sessionEndedReason)
+    )
+      return this.end('exited', this.exitStatus())
+    if (code === CloseCode.Unauthorized)
+      return this.end(this.unauthorizedReason(reason))
+    if (code === CloseCode.PolicyViolation) return this.end('closed')
     if (code === CloseCode.ReplayGap) {
       this.lastSeq = null
-      this.schedule(0)
-      return
+      return this.schedule(0)
     }
     this.attempt += 1
-    const delay =
-      Math.min(baseDelayMs * 2 ** (this.attempt - 1), maxDelayMs) +
-      Math.floor((this.options.random ?? Math.random)() * 250)
-    if (!opened && this.options.probe) {
-      void this.options.probe().then(
-        (result) => {
-          if (this.stopped) return
-          if (result === 'retry') this.schedule(delay)
-          else this.end(result.ended)
-        },
-        () => !this.stopped && this.schedule(delay),
-      )
-      return
+    this.retry(this.nextDelay(), opened)
+  }
+
+  private exitStatus(): ExitStatus | undefined {
+    const exit = this.exit
+    if (!exit) return undefined
+    return {
+      state: exit.state,
+      exitCode: exit.exitCode,
+      ...(exit.signal ? { signal: exit.signal } : {}),
     }
-    this.schedule(delay)
+  }
+
+  // The close reason wins; otherwise the reason from our own permission_changed.
+  private unauthorizedReason(reason: string): EndReason {
+    const why =
+      closeReasons[reason] ??
+      (this.revokedReason
+        ? closeReasons[`access ${this.revokedReason}`]
+        : undefined)
+    return why ?? 'unauthorized'
+  }
+
+  private nextDelay() {
+    const backoff = Math.min(baseDelayMs * 2 ** (this.attempt - 1), maxDelayMs)
+    const jitter = Math.floor(
+      (this.options.random ?? Math.random)() * maxJitterMs,
+    )
+    return backoff + jitter
+  }
+
+  // A handshake that never opened is probed first, so a dead session ends instead of retrying forever.
+  private retry(delay: number, opened: boolean) {
+    if (opened || !this.options.probe) return this.schedule(delay)
+    void this.options.probe().then(
+      (result) => {
+        if (this.stopped) return
+        if (result === 'retry') this.schedule(delay)
+        else this.end(result.ended)
+      },
+      () => !this.stopped && this.schedule(delay),
+    )
   }
 
   private end(reason: EndReason, exit?: ExitStatus) {
@@ -343,12 +376,13 @@ export class TerminalConnection {
   private startKeepalive() {
     clearInterval(this.pingTimer)
     this.pingTimer = setInterval(() => {
-      if (this.socket?.readyState !== 1) return
+      if (this.socket?.readyState !== socketOpen) return
       this.socket.send(encodePing())
       clearTimeout(this.pongTimer)
       const socket = this.socket
       this.pongTimer = setTimeout(() => {
-        if (this.socket === socket) this.onClosed(1006, 'keepalive timeout')
+        if (this.socket === socket)
+          this.onClosed(abnormalClosure, 'keepalive timeout')
       }, pongTimeoutMs)
     }, pingIntervalMs)
   }
@@ -360,7 +394,7 @@ export class TerminalConnection {
     this.socket = null
     if (!socket) return
     socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null
-    if (socket.readyState < 2)
-      socket.close(code ?? 4000, reason ?? 'reconnecting')
+    if (socket.readyState < socketClosing)
+      socket.close(code ?? reconnectCloseCode, reason ?? 'reconnecting')
   }
 }

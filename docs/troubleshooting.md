@@ -12,7 +12,7 @@ server uses:
 
 ```console
 $ webpty doctor
-webpty 1.3.0 (commit 3e9ca7b…, built 2026-10-01T06:00:00Z, go1.26.8, darwin/arm64)
+webpty 1.3.0 (commit 3e9ca7b…, built 2026-10-01T06:00:00Z, go1.26.10, darwin/arm64)
 
 [ OK ] configuration: environment and flags are valid
 [ OK ] platform: darwin/arm64 is supported

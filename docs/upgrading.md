@@ -166,7 +166,7 @@ If any step fails, users see no release (only a draft, or nothing). No image
 tag exists until the image is smoke-tested and its provenance is attested
 and verified. Nothing is staged on the registry first, so a failed run
 leaves nothing to clean up. Actions are pinned to commit SHAs, Go to
-`go.mod`'s toolchain (1.26.8), Node.js to 22.23.2 (as in the Dockerfile),
+`go.mod`'s toolchain (1.26.10), Node.js to 22.23.2 (as in the Dockerfile),
 and each job has only the permissions it needs.
 
 To rehearse a release locally without publishing anything:

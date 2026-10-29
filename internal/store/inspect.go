@@ -56,19 +56,23 @@ func Inspect(ctx context.Context, path string) (Inspection, error) {
 	if !info.Mode().IsRegular() {
 		return Inspection{}, fmt.Errorf("inspect database: %s is not a regular file", path)
 	}
-	// A WAL-mode reader creates -wal and -shm files, owned by whoever runs
-	// doctor. With neither present no server has the database open and the
-	// main file holds every commit, so it is read as immutable instead.
-	mode := "ro"
-	if !exists(path+"-wal") && !exists(path+"-shm") {
-		mode = "immutable"
-	}
-	db, err := openFile(path, mode)
+	db, err := openFile(path, inspectMode(path))
 	if err != nil {
 		return Inspection{}, err
 	}
 	defer db.Close()
 	return inspectDB(ctx, db)
+}
+
+// inspectMode picks how to open path for reading. A WAL-mode reader creates
+// -wal and -shm files, owned by whoever runs doctor. With neither present no
+// server has the database open and the main file holds every commit, so it
+// is read as immutable instead.
+func inspectMode(path string) string {
+	if !exists(path+"-wal") && !exists(path+"-shm") {
+		return "immutable"
+	}
+	return "ro"
 }
 
 func exists(path string) bool {
@@ -80,6 +84,15 @@ func exists(path string) bool {
 // server's journal settings. mode is "ro", "rw", or "immutable" (read-only,
 // without locks or WAL files); none creates the database file.
 func openFile(path, mode string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", fileDSN(path, mode))
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
+}
+
+func fileDSN(path, mode string) string {
 	query := url.Values{}
 	if mode == "immutable" {
 		mode = "ro"
@@ -88,12 +101,7 @@ func openFile(path, mode string) (*sql.DB, error) {
 	query.Set("mode", mode)
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeout.Milliseconds()))
 	escaped := strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23").Replace(path)
-	db, err := sql.Open("sqlite", "file:"+escaped+"?"+query.Encode())
-	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-	return db, nil
+	return "file:" + escaped + "?" + query.Encode()
 }
 
 func inspectDB(ctx context.Context, db *sql.DB) (Inspection, error) {
@@ -115,24 +123,13 @@ func inspectDB(ctx context.Context, db *sql.DB) (Inspection, error) {
 	return Inspection{Exists: true, SchemaVersion: version, Pending: latest - applied}, nil
 }
 
+// maxIntegrityProblems bounds how many problems an integrity failure lists.
+const maxIntegrityProblems = 3
+
 func checkIntegrity(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, `PRAGMA integrity_check`)
+	problems, err := integrityProblems(ctx, db)
 	if err != nil {
-		return fmt.Errorf("database integrity check: %w", err)
-	}
-	defer rows.Close()
-	var problems []string
-	for rows.Next() {
-		var line string
-		if err := rows.Scan(&line); err != nil {
-			return fmt.Errorf("database integrity check: %w", err)
-		}
-		if line != "ok" && len(problems) < 3 {
-			problems = append(problems, line)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("database integrity check: %w", err)
+		return err
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("database integrity check failed: %s", strings.Join(problems, "; "))
@@ -140,51 +137,96 @@ func checkIntegrity(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+func integrityProblems(ctx context.Context, db *sql.DB) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `PRAGMA integrity_check`)
+	if err != nil {
+		return nil, fmt.Errorf("database integrity check: %w", err)
+	}
+	defer rows.Close()
+	var problems []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			return nil, fmt.Errorf("database integrity check: %w", err)
+		}
+		if line != "ok" && len(problems) < maxIntegrityProblems {
+			problems = append(problems, line)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("database integrity check: %w", err)
+	}
+	return problems, nil
+}
+
 // appliedSchema verifies schema_migrations against this build and returns
 // the newest applied version and how many are applied.
 func appliedSchema(ctx context.Context, db *sql.DB) (version, applied int, err error) {
-	var present int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&present); err != nil {
-		return 0, 0, fmt.Errorf("read database: %w", err)
-	}
-	if present == 0 {
-		return 0, 0, errors.New("not a webpty database: it has no schema_migrations table")
+	if err := requireMigrationsTable(ctx, db); err != nil {
+		return 0, 0, err
 	}
 	migrations, err := loadMigrations()
 	if err != nil {
 		return 0, 0, err
 	}
-	known := make(map[int]migration, len(migrations))
-	for _, m := range migrations {
-		known[m.version] = m
+	if version, applied, err = readApplied(ctx, db, migrations); err != nil {
+		return 0, 0, err
 	}
-	var hasChecksum int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('schema_migrations') WHERE name = 'checksum'`).Scan(&hasChecksum); err != nil {
-		return 0, 0, fmt.Errorf("read schema_migrations: %w", err)
+	if version != applied {
+		return 0, 0, fmt.Errorf("database migrations are not contiguous: %d applied, newest is %d", applied, version)
 	}
-	query := `SELECT version, '' FROM schema_migrations ORDER BY version`
-	if hasChecksum > 0 {
-		query = `SELECT version, checksum FROM schema_migrations ORDER BY version`
+	return version, applied, nil
+}
+
+func readApplied(ctx context.Context, db *sql.DB, migrations []migration) (version, applied int, err error) {
+	query, err := appliedQuery(ctx, db)
+	if err != nil {
+		return 0, 0, err
 	}
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return 0, 0, fmt.Errorf("read schema_migrations: %w", err)
 	}
 	defer rows.Close()
+	return checkAppliedRows(rows, migrations)
+}
+
+func requireMigrationsTable(ctx context.Context, db *sql.DB) error {
+	var present int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&present); err != nil {
+		return fmt.Errorf("read database: %w", err)
+	}
+	if present == 0 {
+		return errors.New("not a webpty database: it has no schema_migrations table")
+	}
+	return nil
+}
+
+// appliedQuery lists applied versions with their checksums; a database
+// that predates checksums yields empty ones.
+func appliedQuery(ctx context.Context, db *sql.DB) (string, error) {
+	var hasChecksum int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('schema_migrations') WHERE name = 'checksum'`).Scan(&hasChecksum); err != nil {
+		return "", fmt.Errorf("read schema_migrations: %w", err)
+	}
+	if hasChecksum > 0 {
+		return `SELECT version, checksum FROM schema_migrations ORDER BY version`, nil
+	}
+	return `SELECT version, '' FROM schema_migrations ORDER BY version`, nil
+}
+
+// checkAppliedRows checks each applied row against this build's migrations
+// and returns the newest version and how many rows there are.
+func checkAppliedRows(rows *sql.Rows, migrations []migration) (version, applied int, err error) {
+	known := migrationsByVersion(migrations)
 	for rows.Next() {
 		var v int
 		var checksum string
 		if err := rows.Scan(&v, &checksum); err != nil {
 			return 0, 0, fmt.Errorf("read schema_migrations: %w", err)
 		}
-		m, ok := known[v]
-		switch {
-		case !ok && v > len(migrations):
-			return 0, 0, fmt.Errorf("database has migration version %d, but this build supports up to %d: %w", v, len(migrations), ErrNewerSchema)
-		case !ok:
-			return 0, 0, fmt.Errorf("database has unknown migration version %d", v)
-		case checksum != "" && checksum != m.checksum:
-			return 0, 0, fmt.Errorf("migration %s changed after it was applied", m.name)
+		if err := checkAppliedVersion(known, v, checksum); err != nil {
+			return 0, 0, err
 		}
 		applied++
 		version = max(version, v)
@@ -192,8 +234,20 @@ func appliedSchema(ctx context.Context, db *sql.DB) (version, applied int, err e
 	if err := rows.Err(); err != nil {
 		return 0, 0, fmt.Errorf("read schema_migrations: %w", err)
 	}
-	if version != applied {
-		return 0, 0, fmt.Errorf("database migrations are not contiguous: %d applied, newest is %d", applied, version)
-	}
 	return version, applied, nil
+}
+
+// checkAppliedVersion is the read-only counterpart of checkRecorded: it
+// tells a database from a newer webpty apart from a corrupt one.
+func checkAppliedVersion(known map[int]migration, v int, checksum string) error {
+	m, ok := known[v]
+	switch {
+	case !ok && v > len(known):
+		return fmt.Errorf("database has migration version %d, but this build supports up to %d: %w", v, len(known), ErrNewerSchema)
+	case !ok:
+		return fmt.Errorf("database has unknown migration version %d", v)
+	case checksum != "" && checksum != m.checksum:
+		return fmt.Errorf("migration %s changed after it was applied", m.name)
+	}
+	return nil
 }

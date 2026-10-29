@@ -198,16 +198,9 @@ func (h *Hub) Reserve(req JoinRequest) (*Participant, error) {
 	if h.closed {
 		return nil, ErrClosed
 	}
-	r := h.rooms[req.TerminalID]
-	if r == nil {
-		r = &room{id: req.TerminalID}
-		h.rooms[req.TerminalID] = r
-	}
-	if len(r.participants) >= h.cfg.MaxParticipants {
-		if len(r.participants) == 0 {
-			delete(h.rooms, req.TerminalID)
-		}
-		return nil, ErrFull
+	r, err := h.roomWithSpaceLocked(req.TerminalID)
+	if err != nil {
+		return nil, err
 	}
 	p := &Participant{
 		hub: h, room: r, id: id, role: req.Role, grantID: req.GrantID, sessionID: req.SessionID,
@@ -222,6 +215,24 @@ func (h *Hub) Reserve(req JoinRequest) (*Participant, error) {
 		})
 	}
 	return p, nil
+}
+
+// roomWithSpaceLocked returns the terminal's room, creating it, or ErrFull
+// when it is at the participant limit. A room created only to be refused
+// is not kept.
+func (h *Hub) roomWithSpaceLocked(terminalID string) (*room, error) {
+	r := h.rooms[terminalID]
+	if r == nil {
+		r = &room{id: terminalID}
+		h.rooms[terminalID] = r
+	}
+	if len(r.participants) >= h.cfg.MaxParticipants {
+		if len(r.participants) == 0 {
+			delete(h.rooms, terminalID)
+		}
+		return nil, ErrFull
+	}
+	return r, nil
 }
 
 // Activate announces a reserved participant: it first receives a presence

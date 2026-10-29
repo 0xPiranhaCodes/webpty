@@ -1,6 +1,7 @@
 import { Check, Minus } from 'lucide-react'
 import { type FormEvent, useId, useState } from 'react'
 
+import { isBadRequest } from '../api/client'
 import { describeError } from '../components/describeError'
 import { InlineError } from '../components/StateViews'
 import { toApiError } from '../lib/useAsync'
@@ -38,7 +39,7 @@ export function ChangePasswordPage() {
       const apiError = toApiError(e)
       if (apiError.code === 'invalid_current_password')
         setError('The current password is not correct.')
-      else if (apiError.status === 400)
+      else if (isBadRequest(apiError))
         setError(
           'The server rejected this password. Use at least 12 characters, not the default.',
         )

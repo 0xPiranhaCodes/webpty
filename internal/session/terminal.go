@@ -366,49 +366,85 @@ func (t *terminal) idleFired(gen uint64) {
 // releases the slot.
 func (t *terminal) finish(status pty.ExitStatus, waitErr error) {
 	t.mu.Lock()
+	final := t.finalizeLocked(status, waitErr)
+	subs := t.takeSubsLocked()
+	reason, remote := t.termReason, t.termRemote
+	t.endRecordingLocked(final, reason)
+	t.mu.Unlock()
+
+	t.m.persistFinal(final)
+	t.auditFinal(final, reason, remote, waitErr)
+	// Readers and viewers see the final state once it is durable, or once
+	// the Manager holds it for a later retry.
+	t.mu.Lock()
+	t.info = final
+	t.mu.Unlock()
+	exit := Exit{State: final.State, Code: final.ExitCode, Signal: final.ExitSignal}
+	for _, sub := range subs {
+		sub.finish(exit)
+	}
+	if t.m.cfg.OnEnd != nil {
+		t.m.cfg.OnEnd(final.PublicID)
+	}
+	t.m.remove(final.PublicID)
+	close(t.done)
+}
+
+// finalizeLocked stops the timers and returns a copy of the session info
+// in its final state; t.info itself changes only after persisting.
+func (t *terminal) finalizeLocked(status pty.ExitStatus, waitErr error) Info {
 	t.finished = true
 	t.stopIdleLocked()
 	if t.killTimer != nil {
 		t.killTimer.Stop()
 	}
 	final := t.info
-	info := &final
-	info.EndedAt = t.m.cfg.Now()
-	info.ExitSignal = status.Signal
+	final.EndedAt = t.m.cfg.Now()
+	final.ExitSignal = status.Signal
 	switch {
 	case waitErr != nil:
-		info.State = store.TerminalFailed
-		info.Failure = "wait failed: " + waitErr.Error()
+		final.State = store.TerminalFailed
+		final.Failure = "wait failed: " + waitErr.Error()
 	case t.terminating:
-		info.State = store.TerminalTerminated
+		final.State = store.TerminalTerminated
 	default:
-		info.State = store.TerminalExited
+		final.State = store.TerminalExited
 	}
+	// A signal death has no exit code.
 	if waitErr == nil && status.Signal == "" {
 		code := status.Code
-		info.ExitCode = &code
+		final.ExitCode = &code
 	}
-	exit := Exit{State: info.State, Code: info.ExitCode, Signal: info.ExitSignal}
+	return final
+}
+
+func (t *terminal) takeSubsLocked() []*Subscription {
 	subs := make([]*Subscription, 0, len(t.subs))
 	for sub := range t.subs {
 		subs = append(subs, sub)
 	}
 	clear(t.subs)
-	reason, remote := t.termReason, t.termRemote
-	if t.rec != nil {
-		end := Lifecycle{State: info.State, ExitCode: info.ExitCode, Signal: info.ExitSignal}
-		switch info.State {
-		case store.TerminalFailed:
-			end.Reason = "wait_failed"
-		case store.TerminalTerminated:
-			end.Reason = reason
-		}
-		t.rec.End(end)
-		t.rec = nil
-	}
-	t.mu.Unlock()
+	return subs
+}
 
-	t.m.persistFinal(final)
+func (t *terminal) endRecordingLocked(final Info, reason string) {
+	if t.rec == nil {
+		return
+	}
+	end := Lifecycle{State: final.State, ExitCode: final.ExitCode, Signal: final.ExitSignal}
+	switch final.State {
+	case store.TerminalFailed:
+		end.Reason = "wait_failed"
+	case store.TerminalTerminated:
+		end.Reason = reason
+	}
+	t.rec.End(end)
+	t.rec = nil
+}
+
+// auditFinal records how the session ended; only the terminating request
+// carries a remote address.
+func (t *terminal) auditFinal(final Info, reason, remote string, waitErr error) {
 	details := map[string]string{"sessionId": final.PublicID}
 	if final.ExitCode != nil {
 		details["exitCode"] = strconv.Itoa(*final.ExitCode)
@@ -430,17 +466,4 @@ func (t *terminal) finish(status pty.ExitStatus, waitErr error) {
 		t.m.audit("terminal.session.exited", "", details)
 		logger.Info("terminal session exited", "sessionId", final.PublicID, "exitCode", details["exitCode"], "signal", final.ExitSignal)
 	}
-	// Readers and viewers see the final state once it is durable, or once
-	// the Manager holds it for a later retry.
-	t.mu.Lock()
-	t.info = final
-	t.mu.Unlock()
-	for _, sub := range subs {
-		sub.finish(exit)
-	}
-	if t.m.cfg.OnEnd != nil {
-		t.m.cfg.OnEnd(final.PublicID)
-	}
-	t.m.remove(final.PublicID)
-	close(t.done)
 }

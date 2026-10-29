@@ -2,8 +2,9 @@ import { ArrowLeft, Square } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useParams } from 'react-router'
 
-import { ApiError } from '../api/client'
+import { isNotFound, isUnauthorized } from '../api/client'
 import { useApi } from '../api/services'
+import { isLiveState } from '../api/types'
 import { useAdminAuth } from '../auth/authContext'
 import { EmptyState, ErrorState, Loading } from '../components/StateViews'
 import { commandLine } from '../lib/format'
@@ -13,16 +14,21 @@ import { Workspace } from '../terminal/Workspace'
 import { GrantsPanel } from './GrantsPanel'
 import { TerminateDialog } from './SessionsPage'
 
+// Only the newest few recordings can be the one still capturing a live terminal.
+const activeRecordingLookupLimit = 5
+
 export function SessionWorkspacePage() {
   const { id = '' } = useParams()
   const api = useApi()
   const auth = useAdminAuth()
   const data = useAsync(`workspace:${id}`, async (signal) => {
     const terminal = await api.getTerminal(id, signal)
-    const live = terminal.state === 'running' || terminal.state === 'starting'
-    const recordings = live
+    const recordings = isLiveState(terminal.state)
       ? await api
-          .listRecordings({ terminalId: id, limit: 5 }, signal)
+          .listRecordings(
+            { terminalId: id, limit: activeRecordingLookupLimit },
+            signal,
+          )
           .catch(() => [])
       : []
     const active = recordings.find(
@@ -55,7 +61,7 @@ export function SessionWorkspacePage() {
       </FramedState>
     )
   const { terminal, recordingId } = data.data!
-  if (terminal.state !== 'running' && terminal.state !== 'starting') {
+  if (!isLiveState(terminal.state)) {
     return (
       <FramedState back={back}>
         <EmptyState
@@ -81,16 +87,13 @@ export function SessionWorkspacePage() {
   const probe = async (): Promise<ProbeResult> => {
     try {
       const current = await api.getTerminal(id)
-      return current.state === 'running' || current.state === 'starting'
-        ? 'retry'
-        : { ended: 'exited' }
+      return isLiveState(current.state) ? 'retry' : { ended: 'exited' }
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
+      if (isUnauthorized(e)) {
         auth.sessionEnded()
         return { ended: 'unauthorized' }
       }
-      if (e instanceof ApiError && e.status === 404)
-        return { ended: 'not_found' }
+      if (isNotFound(e)) return { ended: 'not_found' }
       return 'retry'
     }
   }

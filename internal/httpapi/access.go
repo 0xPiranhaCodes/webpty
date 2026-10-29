@@ -130,29 +130,28 @@ func noReferrer(next http.Handler) http.Handler {
 	})
 }
 
+type createGrantBody struct {
+	Role           string `json:"role"`
+	Label          string `json:"label"`
+	TTLSeconds     int64  `json:"ttlSeconds"`
+	SingleUse      bool   `json:"singleUse"`
+	MaxRedemptions int    `json:"maxRedemptions"`
+}
+
+// maxTTLSeconds keeps TTLSeconds*time.Second from overflowing a Duration.
+const maxTTLSeconds = math.MaxInt64 / int64(time.Second)
+
 func (api *terminalAPI) createGrant(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Role           string `json:"role"`
-		Label          string `json:"label"`
-		TTLSeconds     int64  `json:"ttlSeconds"`
-		SingleUse      bool   `json:"singleUse"`
-		MaxRedemptions int    `json:"maxRedemptions"`
-	}
+	var body createGrantBody
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	if body.TTLSeconds < 0 || body.TTLSeconds > math.MaxInt64/int64(time.Second) {
+	if body.TTLSeconds < 0 || body.TTLSeconds > maxTTLSeconds {
 		api.writeAccessError(w, "create grant", access.ErrInvalidArgument)
 		return
 	}
 	id := r.PathValue("id")
-	info, err := api.manager.Get(r.Context(), id)
-	if err != nil {
-		api.writeError(w, "create grant", err)
-		return
-	}
-	if info.State != store.TerminalRunning {
-		api.writeError(w, "create grant", session.ErrInvalidState)
+	if !api.requireRunning(w, r, id, "create grant") {
 		return
 	}
 	invitation, err := api.access.CreateGrant(r.Context(), access.GrantRequest{
@@ -164,6 +163,26 @@ func (api *terminalAPI) createGrant(w http.ResponseWriter, r *http.Request) {
 		api.writeAccessError(w, "create grant", err)
 		return
 	}
+	api.writeInvitation(w, r, invitation)
+}
+
+// requireRunning writes an error and reports false unless terminal id is running.
+func (api *terminalAPI) requireRunning(w http.ResponseWriter, r *http.Request, id, operation string) bool {
+	info, err := api.manager.Get(r.Context(), id)
+	if err != nil {
+		api.writeError(w, operation, err)
+		return false
+	}
+	if info.State != store.TerminalRunning {
+		api.writeError(w, operation, session.ErrInvalidState)
+		return false
+	}
+	return true
+}
+
+// writeInvitation returns the plaintext token; this response is the only
+// place it ever appears.
+func (api *terminalAPI) writeInvitation(w http.ResponseWriter, r *http.Request, invitation access.Invitation) {
 	replaced := make([]string, 0, len(invitation.Replaced))
 	for _, old := range invitation.Replaced {
 		replaced = append(replaced, old.PublicID)
@@ -226,24 +245,7 @@ func (api *terminalAPI) redeem(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Token string `json:"token"`
 	}
-	if !decodeBody(w, r, &body) {
-		return
-	}
-	// Tokens carry 256 random bits, so throttling only bounds the cost of
-	// guessing; it counts every attempt, successful or not.
-	if decision := api.settings.RedeemThrottle.Check(auth.ThrottleKey(remoteIP(r))); !decision.Allowed {
-		if decision.FirstDenial {
-			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-			if err := api.access.Audit(ctx, "access.redeem.throttled", remoteIP(r), nil); err != nil {
-				api.settings.Logger.Error("append audit event", "type", "access.redeem.throttled", "error", err)
-			}
-			cancel()
-		}
-		setRetryAfter(w, decision.RetryAfter)
-		writeJSON(w, http.StatusTooManyRequests, struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
-		}{"too many attempts", "rate_limited"})
+	if !decodeBody(w, r, &body) || !api.allowRedeem(w, r) {
 		return
 	}
 	// The terminal metadata is read inside the redemption so that a failed
@@ -268,6 +270,33 @@ func (api *terminalAPI) redeem(w http.ResponseWriter, r *http.Request) {
 	maxAge := int(current.ExpiresAt.Sub(api.access.Now()).Seconds())
 	http.SetCookie(w, api.admin.cookie(accessCookie, current.Token, max(maxAge, 1)))
 	writeJSON(w, http.StatusOK, guestSessionBody(current, current.Token, info))
+}
+
+// allowRedeem applies the per-address redeem throttle, answering 429 when
+// it refuses. Tokens carry 256 random bits, so throttling only bounds the
+// cost of guessing; it counts every attempt, successful or not.
+func (api *terminalAPI) allowRedeem(w http.ResponseWriter, r *http.Request) bool {
+	decision := api.settings.RedeemThrottle.Check(auth.ThrottleKey(remoteIP(r)))
+	if decision.Allowed {
+		return true
+	}
+	if decision.FirstDenial {
+		api.auditThrottledRedeem(r)
+	}
+	setRetryAfter(w, decision.RetryAfter)
+	writeJSON(w, http.StatusTooManyRequests, struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}{"too many attempts", "rate_limited"})
+	return false
+}
+
+func (api *terminalAPI) auditThrottledRedeem(r *http.Request) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditTimeout)
+	defer cancel()
+	if err := api.access.Audit(ctx, "access.redeem.throttled", remoteIP(r), nil); err != nil {
+		api.settings.Logger.Error("append audit event", "type", "access.redeem.throttled", "error", err)
+	}
 }
 
 func (api *terminalAPI) guestSession(w http.ResponseWriter, r *http.Request) {

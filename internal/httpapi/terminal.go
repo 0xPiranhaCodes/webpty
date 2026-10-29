@@ -57,36 +57,7 @@ type terminalAPI struct {
 // WithTerminals mounts the admin terminal REST API and the terminal
 // WebSocket, plus the capability-grant routes when settings.Access is set.
 func WithTerminals(service *auth.Service, security SecuritySettings, manager *session.Manager, settings TerminalSettings) Option {
-	if settings.WriteTimeout <= 0 {
-		settings.WriteTimeout = 10 * time.Second
-	}
-	if settings.PingInterval <= 0 {
-		settings.PingInterval = 30 * time.Second
-	}
-	if settings.Heartbeat == nil {
-		settings.Heartbeat = func(interval time.Duration) (<-chan time.Time, func()) {
-			ticker := time.NewTicker(interval)
-			return ticker.C, ticker.Stop
-		}
-	}
-	if settings.MaxMessageBytes <= 0 {
-		settings.MaxMessageBytes = 64 << 10
-	}
-	if settings.InputQueueBytes <= 0 {
-		settings.InputQueueBytes = 256 << 10
-	}
-	if settings.TerminateTimeout <= 0 {
-		settings.TerminateTimeout = 15 * time.Second
-	}
-	if settings.Logger == nil {
-		settings.Logger = slog.Default()
-	}
-	if settings.Presence == nil {
-		settings.Presence = collab.NewHub(collab.Config{})
-	}
-	if settings.RedeemThrottle == nil {
-		settings.RedeemThrottle = auth.NewThrottle(auth.ThrottleConfig{Limit: 30, Window: time.Minute})
-	}
+	settings = settings.withDefaults()
 	a := &adminAPI{service: service, security: security, guests: settings.Access}
 	api := &terminalAPI{admin: a, manager: manager, access: settings.Access, presence: settings.Presence, settings: settings}
 	read, mutate := a.adminRoutes()
@@ -101,6 +72,49 @@ func WithTerminals(service *auth.Service, security SecuritySettings, manager *se
 		if api.access != nil {
 			api.mountAccess(mux, read, mutate)
 		}
+	}
+}
+
+// Defaults for zero TerminalSettings fields.
+const (
+	defaultWSWriteTimeout   = 10 * time.Second
+	defaultWSPingInterval   = 30 * time.Second
+	defaultMaxMessageBytes  = 64 << 10
+	defaultInputQueueBytes  = 256 << 10
+	defaultTerminateTimeout = 15 * time.Second
+	// Redeem tokens carry 256 random bits; this only bounds guessing cost.
+	redeemAttemptsPerWindow = 30
+	redeemThrottleWindow    = time.Minute
+)
+
+func (settings TerminalSettings) withDefaults() TerminalSettings {
+	setPositive(&settings.WriteTimeout, defaultWSWriteTimeout)
+	setPositive(&settings.PingInterval, defaultWSPingInterval)
+	setPositive(&settings.MaxMessageBytes, defaultMaxMessageBytes)
+	setPositive(&settings.InputQueueBytes, defaultInputQueueBytes)
+	setPositive(&settings.TerminateTimeout, defaultTerminateTimeout)
+	if settings.Heartbeat == nil {
+		settings.Heartbeat = func(interval time.Duration) (<-chan time.Time, func()) {
+			ticker := time.NewTicker(interval)
+			return ticker.C, ticker.Stop
+		}
+	}
+	if settings.Logger == nil {
+		settings.Logger = slog.Default()
+	}
+	if settings.Presence == nil {
+		settings.Presence = collab.NewHub(collab.Config{})
+	}
+	if settings.RedeemThrottle == nil {
+		settings.RedeemThrottle = auth.NewThrottle(auth.ThrottleConfig{Limit: redeemAttemptsPerWindow, Window: redeemThrottleWindow})
+	}
+	return settings
+}
+
+// setPositive replaces a zero or negative value with fallback.
+func setPositive[T int | int64 | time.Duration](v *T, fallback T) {
+	if *v <= 0 {
+		*v = fallback
 	}
 }
 

@@ -3,7 +3,7 @@ import { type FormEvent, useId, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 
 import { useApi } from '../api/services'
-import type { Terminal } from '../api/types'
+import { isLiveState, type Terminal } from '../api/types'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { describeError } from '../components/describeError'
 import {
@@ -16,7 +16,7 @@ import { TerminalStateBadge } from '../components/StatusBadge'
 import { commandLine, formatDateTime, formatTime } from '../lib/format'
 import { toApiError, useAsync } from '../lib/useAsync'
 
-const isLive = (t: Terminal) => t.state === 'running' || t.state === 'starting'
+const isLive = (t: Terminal) => isLiveState(t.state)
 
 export function SessionsPage() {
   const api = useApi()

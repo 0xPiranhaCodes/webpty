@@ -27,6 +27,9 @@ const TerminalProtocol = "webpty.terminal.v1"
 
 const protocolVersion = 1
 
+// auditTimeout bounds an audit write that runs after the request may be gone.
+const auditTimeout = 5 * time.Second
+
 // Application close codes.
 const (
 	CloseSlowConsumer  websocket.StatusCode = 4000
@@ -85,21 +88,15 @@ type pongMessage struct {
 	Type string `json:"type"`
 }
 
+// websocket upgrades an authorized viewer to the terminal stream. The
+// steps run in a fixed order: subscribe, reserve a participant slot,
+// re-check guest access, accept the connection, then activate. Deferred
+// cleanups unwind in the reverse order.
 func (api *terminalAPI) websocket(w http.ResponseWriter, r *http.Request) {
-	if !offersProtocol(r.Header, TerminalProtocol) {
-		writeError(w, http.StatusBadRequest, "websocket subprotocol "+TerminalProtocol+" required")
+	opts, ok := resumeOptions(w, r)
+	if !ok {
 		return
 	}
-	opts := session.SubscribeOptions{}
-	if raw := r.URL.Query().Get("afterSeq"); raw != "" {
-		seq, err := strconv.ParseUint(raw, 10, 64)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "afterSeq must be a non-negative integer")
-			return
-		}
-		opts = session.SubscribeOptions{Resume: true, AfterSeq: seq}
-	}
-
 	id := r.PathValue("id")
 	sub, err := api.manager.Subscribe(r.Context(), id, opts)
 	var gap *session.ReplayGapError
@@ -110,32 +107,67 @@ func (api *terminalAPI) websocket(w http.ResponseWriter, r *http.Request) {
 	if sub != nil {
 		defer sub.Close()
 	}
-
-	// The participant is reserved now so the viewer limit and revocations
-	// apply, but announced only once the connection is established.
 	v := viewerFrom(r.Context())
+	participant, ok := api.reserveParticipant(w, r, id, v)
+	if !ok {
+		return
+	}
+	defer participant.Leave()
+	conn, ok := api.accept(w, r, participant)
+	if !ok {
+		return
+	}
+	defer conn.CloseNow()
+	api.runStream(r, conn, id, v, participant, sub, gap)
+}
+
+// resumeOptions reads the optional afterSeq resume point.
+func resumeOptions(w http.ResponseWriter, r *http.Request) (session.SubscribeOptions, bool) {
+	if !offersProtocol(r.Header, TerminalProtocol) {
+		writeError(w, http.StatusBadRequest, "websocket subprotocol "+TerminalProtocol+" required")
+		return session.SubscribeOptions{}, false
+	}
+	raw := r.URL.Query().Get("afterSeq")
+	if raw == "" {
+		return session.SubscribeOptions{}, true
+	}
+	seq, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "afterSeq must be a non-negative integer")
+		return session.SubscribeOptions{}, false
+	}
+	return session.SubscribeOptions{Resume: true, AfterSeq: seq}, true
+}
+
+// reserveParticipant holds a slot so the viewer limit and revocations
+// apply; the participant is announced only once the connection is up.
+func (api *terminalAPI) reserveParticipant(w http.ResponseWriter, r *http.Request, id string, v viewer) (*collab.Participant, bool) {
 	participant, err := api.presence.Reserve(collab.JoinRequest{
 		TerminalID: id, Role: v.role(), GrantID: v.guest.Grant.PublicID, SessionID: v.guest.ID, ExpiresAt: v.guest.ExpiresAt,
 	})
 	switch {
 	case errors.Is(err, collab.ErrFull):
 		api.writeError(w, "join terminal", session.ErrViewerLimit)
-		return
+		return nil, false
 	case err != nil:
 		api.writeError(w, "join terminal", session.ErrClosed)
-		return
+		return nil, false
 	}
-	defer participant.Leave()
+	// A revocation committed before the reservation was not delivered to
+	// this participant, so a guest is checked again now that it is registered.
 	if !v.owner {
-		// A revocation committed before the reservation was not delivered
-		// to this participant, so the session is checked again now that it
-		// is registered.
 		if _, err := api.access.Authenticate(r.Context(), v.token); err != nil {
 			writeError(w, http.StatusUnauthorized, "unauthenticated")
-			return
+			participant.Leave()
+			return nil, false
 		}
 	}
+	return participant, true
+}
 
+// accept upgrades the connection and activates the participant. On false
+// the connection, if any, is already closed.
+func (api *terminalAPI) accept(w http.ResponseWriter, r *http.Request, participant *collab.Participant) (*websocket.Conn, bool) {
 	// Hijacking clears the server's request deadlines; each message write
 	// carries its own deadline instead.
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -144,20 +176,26 @@ func (api *terminalAPI) websocket(w http.ResponseWriter, r *http.Request) {
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		return
+		return nil, false
 	}
-	defer conn.CloseNow()
 	conn.SetReadLimit(api.settings.MaxMessageBytes)
 	var revoked *collab.RevokedError
 	switch err := participant.Activate(); {
 	case errors.As(err, &revoked):
 		_ = conn.Close(CloseUnauthorized, "access "+revoked.Reason)
-		return
 	case err != nil:
 		_ = conn.Close(websocket.StatusGoingAway, "server shutting down")
-		return
+	default:
+		return conn, true
 	}
+	conn.CloseNow()
+	return nil, false
+}
 
+// runStream serves an accepted connection, auditing the join and leave.
+// A resume point that is no longer buffered is reported and closed.
+func (api *terminalAPI) runStream(r *http.Request, conn *websocket.Conn, id string, v viewer,
+	participant *collab.Participant, sub *session.Subscription, gap *session.ReplayGapError) {
 	stream := &terminalStream{api: api, conn: conn, id: id, viewer: v, participant: participant,
 		remote: remoteIP(r), input: newInputQueue(api.settings.InputQueueBytes), denied: map[collab.Action]bool{}}
 	stream.auditParticipant("access.participant.joined", nil)
@@ -246,7 +284,7 @@ func (s *terminalStream) auditParticipant(eventType string, extra map[string]str
 	for k, v := range extra {
 		details[k] = v
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), auditTimeout)
 	defer cancel()
 	if err := s.api.access.Audit(ctx, eventType, s.remote, details); err != nil {
 		s.api.settings.Logger.Error("append audit event", "type", eventType, "error", err)
@@ -380,6 +418,8 @@ func (s *terminalStream) write(ctx context.Context, message any) error {
 	return s.conn.Write(ctx, websocket.MessageText, data)
 }
 
+// serve runs the stream's goroutines and forwards session events until
+// the stream ends, then sends the chosen close frame and waits for them.
 func (s *terminalStream) serve(ctx context.Context, sub *session.Subscription) {
 	streamCtx, stop := context.WithCancel(ctx)
 	defer stop()
@@ -389,63 +429,77 @@ func (s *terminalStream) serve(ctx context.Context, sub *session.Subscription) {
 	// context is cancelled, which would lose the close frame that end() chose.
 	writeCtx := context.WithoutCancel(streamCtx)
 
-	readerDone := make(chan struct{})
-	go func() {
-		defer close(readerDone)
-		s.readLoop(ctx)
-	}()
-	writerDone := make(chan struct{})
-	go func() {
-		defer close(writerDone)
-		s.writeLoop(streamCtx)
-	}()
+	readerDone := goDone(func() { s.readLoop(ctx) })
+	writerDone := goDone(func() { s.writeLoop(streamCtx) })
 	go s.heartbeat(streamCtx)
+	s.sendReady(writeCtx, sub)
+	presenceDone := goDone(func() { s.presenceLoop(streamCtx) })
+	statusDone := goDone(func() { s.statusLoop(streamCtx) })
+	for streamCtx.Err() == nil {
+		event, err := sub.Next(streamCtx)
+		if err != nil {
+			if streamCtx.Err() == nil {
+				s.end(closeStatusFor(err))
+			}
+			continue
+		}
+		s.forward(writeCtx, event)
+	}
+	s.closeConn()
+	for _, done := range []<-chan struct{}{readerDone, writerDone, presenceDone, statusDone} {
+		<-done
+	}
+}
 
+// goDone runs fn in a goroutine and returns a channel closed when it returns.
+func goDone(fn func()) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	return done
+}
+
+// sendReady sends the session snapshot; guests get the shared view, which
+// omits the command and its arguments.
+func (s *terminalStream) sendReady(ctx context.Context, sub *session.Subscription) {
 	var info any = toSharedTerminalJSON(sub.Info())
 	if s.viewer.owner {
 		info = toTerminalJSON(sub.Info())
 	}
 	role := s.participant.Role()
-	if err := s.write(writeCtx, readyMessage{Type: "ready", Version: protocolVersion,
+	if err := s.write(ctx, readyMessage{Type: "ready", Version: protocolVersion,
 		Session: info, Seq: sub.LastSeq(), Role: role, Permissions: permissionsFor(role)}); err != nil {
 		s.end(0, "")
 	}
-	presenceDone := make(chan struct{})
-	go func() {
-		defer close(presenceDone)
-		s.presenceLoop(streamCtx)
-	}()
-	statusDone := make(chan struct{})
-	go func() {
-		defer close(statusDone)
-		s.statusLoop(streamCtx)
-	}()
-	for streamCtx.Err() == nil {
-		event, err := sub.Next(streamCtx)
-		switch {
-		case err != nil:
-			if streamCtx.Err() == nil {
-				s.end(closeStatusFor(err))
-			}
-		case event.Kind == session.EventOutput:
-			if err := s.write(writeCtx, outputMessage{Type: "output", Seq: event.Seq,
-				Data: base64.StdEncoding.EncodeToString(event.Data)}); err != nil {
-				s.end(0, "")
-			}
-		case event.Kind == session.EventResize:
-			if err := s.write(writeCtx, resizeMessage{Type: "resize", Rows: event.Rows, Cols: event.Cols}); err != nil {
-				s.end(0, "")
-			}
-		case event.Kind == session.EventExit:
-			if err := s.write(writeCtx, exitMessage{Type: "exit", State: string(event.Exit.State),
-				ExitCode: event.Exit.Code, Signal: event.Exit.Signal}); err != nil {
-				s.end(0, "")
-				break
-			}
-			s.end(closeStatusFor(io.EOF))
-		}
-	}
+}
 
+// forward writes one session event; exit also ends the stream normally.
+func (s *terminalStream) forward(ctx context.Context, event session.Event) {
+	var message any
+	switch event.Kind {
+	case session.EventOutput:
+		message = outputMessage{Type: "output", Seq: event.Seq, Data: base64.StdEncoding.EncodeToString(event.Data)}
+	case session.EventResize:
+		message = resizeMessage{Type: "resize", Rows: event.Rows, Cols: event.Cols}
+	case session.EventExit:
+		message = exitMessage{Type: "exit", State: string(event.Exit.State), ExitCode: event.Exit.Code, Signal: event.Exit.Signal}
+	default:
+		return
+	}
+	if err := s.write(ctx, message); err != nil {
+		s.end(0, "")
+		return
+	}
+	if event.Kind == session.EventExit {
+		s.end(closeStatusFor(io.EOF))
+	}
+}
+
+// closeConn sends the close frame end() chose, or drops the connection
+// when it is already unusable.
+func (s *terminalStream) closeConn() {
 	// Synchronises with whichever goroutine ended the stream.
 	s.end(0, "")
 	if s.code != 0 {
@@ -453,10 +507,6 @@ func (s *terminalStream) serve(ctx context.Context, sub *session.Subscription) {
 	} else {
 		_ = s.conn.CloseNow()
 	}
-	<-readerDone
-	<-writerDone
-	<-presenceDone
-	<-statusDone
 }
 
 type recordingStatusMessage struct {
@@ -506,23 +556,8 @@ func (s *terminalStream) statusLoop(ctx context.Context) {
 // violation ends the stream.
 func (s *terminalStream) readLoop(ctx context.Context) {
 	for {
-		typ, data, err := s.conn.Read(ctx)
-		if err != nil {
-			s.end(0, "")
-			return
-		}
-		if typ != websocket.MessageText {
-			s.end(websocket.StatusUnsupportedData, "binary messages are not supported")
-			return
-		}
-		if !utf8.Valid(data) {
-			s.end(websocket.StatusInvalidFramePayloadData, "invalid UTF-8")
-			return
-		}
-		message, ok := decodeClientMessage(data)
+		message, ok := s.readMessage(ctx)
 		if !ok {
-			_ = s.write(ctx, errorMessage{Type: "error", Code: "invalid_message", Message: "malformed or unsupported message"})
-			s.end(websocket.StatusPolicyViolation, "invalid message")
 			return
 		}
 		if !s.allow(ctx, collab.Action(message.Type)) {
@@ -530,28 +565,60 @@ func (s *terminalStream) readLoop(ctx context.Context) {
 		}
 		switch message.Type {
 		case "input":
-			if *message.Data == "" {
-				continue
-			}
-			if !s.input.push([]byte(*message.Data)) {
-				s.api.settings.Logger.Warn("terminal viewer disconnected: input backlog",
-					"sessionId", s.id, "queueLimitBytes", s.input.limit)
-				_ = s.write(ctx, errorMessage{Type: "error", Code: "input_overflow",
-					Message: "terminal is not accepting input fast enough"})
-				s.end(CloseInputOverflow, "input backlog")
+			if !s.queueInput(ctx, *message.Data) {
 				return
 			}
 		case "resize":
-			err := s.api.manager.Resize(s.id, *message.Rows, *message.Cols)
-			if errors.Is(err, session.ErrInvalidArgument) {
-				_ = s.write(ctx, errorMessage{Type: "error", Code: "invalid_resize",
-					Message: "rows and cols must be between 1 and " + strconv.Itoa(session.MaxRows)})
-			} else if err != nil && !errors.Is(err, session.ErrInvalidState) {
-				s.api.settings.Logger.Warn("terminal resize rejected", "sessionId", s.id, "error", err)
-			}
+			s.resize(ctx, *message.Rows, *message.Cols)
 		case "ping":
 			_ = s.write(ctx, pongMessage{Type: "pong"})
 		}
+	}
+}
+
+// readMessage reads and decodes one client message, ending the stream on
+// a read error or a protocol violation.
+func (s *terminalStream) readMessage(ctx context.Context) (clientMessage, bool) {
+	typ, data, err := s.conn.Read(ctx)
+	switch {
+	case err != nil:
+		s.end(0, "")
+	case typ != websocket.MessageText:
+		s.end(websocket.StatusUnsupportedData, "binary messages are not supported")
+	case !utf8.Valid(data):
+		s.end(websocket.StatusInvalidFramePayloadData, "invalid UTF-8")
+	default:
+		message, ok := decodeClientMessage(data)
+		if ok {
+			return message, true
+		}
+		_ = s.write(ctx, errorMessage{Type: "error", Code: "invalid_message", Message: "malformed or unsupported message"})
+		s.end(websocket.StatusPolicyViolation, "invalid message")
+	}
+	return clientMessage{}, false
+}
+
+// queueInput reports false once the input backlog has ended the stream.
+// The input itself is never logged.
+func (s *terminalStream) queueInput(ctx context.Context, data string) bool {
+	if data == "" || s.input.push([]byte(data)) {
+		return true
+	}
+	s.api.settings.Logger.Warn("terminal viewer disconnected: input backlog",
+		"sessionId", s.id, "queueLimitBytes", s.input.limit)
+	_ = s.write(ctx, errorMessage{Type: "error", Code: "input_overflow",
+		Message: "terminal is not accepting input fast enough"})
+	s.end(CloseInputOverflow, "input backlog")
+	return false
+}
+
+func (s *terminalStream) resize(ctx context.Context, rows, cols int) {
+	err := s.api.manager.Resize(s.id, rows, cols)
+	if errors.Is(err, session.ErrInvalidArgument) {
+		_ = s.write(ctx, errorMessage{Type: "error", Code: "invalid_resize",
+			Message: "rows and cols must be between 1 and " + strconv.Itoa(session.MaxRows)})
+	} else if err != nil && !errors.Is(err, session.ErrInvalidState) {
+		s.api.settings.Logger.Warn("terminal resize rejected", "sessionId", s.id, "error", err)
 	}
 }
 
@@ -567,34 +634,10 @@ var clientFields = map[string][]string{
 // exactly those of its type, each present once, with exact (case-sensitive)
 // names and non-null values of the right JSON type.
 func decodeClientMessage(data []byte) (clientMessage, bool) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+	raw, ok := decodeObject(data)
+	if !ok {
 		return clientMessage{}, false
 	}
-	raw := map[string]json.RawMessage{}
-	for decoder.More() {
-		token, err := decoder.Token()
-		key, isKey := token.(string)
-		if err != nil || !isKey {
-			return clientMessage{}, false
-		}
-		if _, dup := raw[key]; dup {
-			return clientMessage{}, false
-		}
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
-			return clientMessage{}, false
-		}
-		raw[key] = value
-	}
-	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
-		return clientMessage{}, false
-	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return clientMessage{}, false
-	}
-
 	var message clientMessage
 	if !decodeStrict(raw["type"], &message.Type) {
 		return clientMessage{}, false
@@ -605,26 +648,57 @@ func decodeClientMessage(data []byte) (clientMessage, bool) {
 	}
 	for _, field := range fields {
 		value, present := raw[field]
-		if !present {
-			return clientMessage{}, false
-		}
-		var ok bool
-		switch field {
-		case "type":
-			ok = true
-		case "data":
-			message.Data = new(string)
-			ok = decodeStrict(value, message.Data)
-		case "rows":
-			message.Rows, ok = decodeInt(value)
-		case "cols":
-			message.Cols, ok = decodeInt(value)
-		}
-		if !ok {
+		if !present || !message.setField(field, value) {
 			return clientMessage{}, false
 		}
 	}
 	return message, true
+}
+
+// decodeObject reads exactly one JSON object with no duplicate members and
+// nothing after it.
+func decodeObject(data []byte) (map[string]json.RawMessage, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return nil, false
+	}
+	raw := map[string]json.RawMessage{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		key, isKey := token.(string)
+		if err != nil || !isKey {
+			return nil, false
+		}
+		var value json.RawMessage
+		if _, dup := raw[key]; dup || decoder.Decode(&value) != nil {
+			return nil, false
+		}
+		raw[key] = value
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return nil, false
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, false
+	}
+	return raw, true
+}
+
+// setField decodes one member into m; "type" was decoded already.
+func (m *clientMessage) setField(field string, value json.RawMessage) (ok bool) {
+	switch field {
+	case "type":
+		return true
+	case "data":
+		m.Data = new(string)
+		return decodeStrict(value, m.Data)
+	case "rows":
+		m.Rows, ok = decodeInt(value)
+	case "cols":
+		m.Cols, ok = decodeInt(value)
+	}
+	return ok
 }
 
 // decodeStrict decodes a JSON string into target, rejecting null and other

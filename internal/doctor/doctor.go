@@ -222,20 +222,9 @@ func checkMigrations() Check {
 
 func checkCommand(cfg config.Config) Check {
 	c := Check{Name: "command"}
-	resolved := cfg.Command
-	if !strings.Contains(cfg.Command, "/") {
-		found, err := exec.LookPath(cfg.Command)
-		if err != nil {
-			return fail(c, "%s is not on PATH", cfg.Command)
-		}
-		resolved = found
-	}
-	info, err := os.Stat(resolved)
-	switch {
-	case err != nil:
-		return fail(c, "%s: %v", resolved, describe(err))
-	case !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0:
-		return fail(c, "%s is not an executable file", resolved)
+	resolved, problem := resolveExecutable(cfg.Command)
+	if problem != "" {
+		return fail(c, "%s", problem)
 	}
 	policy, err := session.NewCommandPolicy(cfg.CommandAllow, cfg.CommandDeny)
 	if err != nil {
@@ -244,21 +233,52 @@ func checkCommand(cfg config.Config) Check {
 	if !policy.Permits(cfg.Command) {
 		return fail(c, "%s is not permitted by WEBPTY_COMMAND_ALLOW/WEBPTY_COMMAND_DENY", cfg.Command)
 	}
-	arguments := "no arguments"
-	switch n := len(cfg.CommandArgs); n {
-	case 0:
-	case 1:
-		arguments = "1 argument"
-	default:
-		arguments = fmt.Sprintf("%d arguments", n)
-	}
-	rule := "no allow or deny list"
-	if len(cfg.CommandAllow) > 0 || len(cfg.CommandDeny) > 0 {
-		rule = fmt.Sprintf("permitted by a policy of %d allowed and %d denied paths", len(cfg.CommandAllow), len(cfg.CommandDeny))
-	}
 	c.Detail = fmt.Sprintf("%s (%s) with %s; %s; %d extra environment variables passed to terminals",
-		cfg.Command, resolved, arguments, rule, len(cfg.ChildEnvPassthrough))
+		cfg.Command, resolved, countArguments(len(cfg.CommandArgs)), describePolicy(cfg), len(cfg.ChildEnvPassthrough))
 	return c
+}
+
+// anyExecuteBits matches a file executable by its owner, group, or others.
+const anyExecuteBits = 0o111
+
+// resolveExecutable finds command on PATH unless it names a path, and
+// returns a description of the problem when it is not an executable file.
+func resolveExecutable(command string) (resolved, problem string) {
+	resolved = command
+	if !strings.Contains(command, "/") {
+		found, err := exec.LookPath(command)
+		if err != nil {
+			return "", fmt.Sprintf("%s is not on PATH", command)
+		}
+		resolved = found
+	}
+	info, err := os.Stat(resolved)
+	switch {
+	case err != nil:
+		return "", fmt.Sprintf("%s: %v", resolved, describe(err))
+	case !info.Mode().IsRegular() || info.Mode().Perm()&anyExecuteBits == 0:
+		return "", fmt.Sprintf("%s is not an executable file", resolved)
+	}
+	return resolved, ""
+}
+
+// countArguments reports only how many arguments there are, never their values.
+func countArguments(n int) string {
+	switch n {
+	case 0:
+		return "no arguments"
+	case 1:
+		return "1 argument"
+	default:
+		return fmt.Sprintf("%d arguments", n)
+	}
+}
+
+func describePolicy(cfg config.Config) string {
+	if len(cfg.CommandAllow) == 0 && len(cfg.CommandDeny) == 0 {
+		return "no allow or deny list"
+	}
+	return fmt.Sprintf("permitted by a policy of %d allowed and %d denied paths", len(cfg.CommandAllow), len(cfg.CommandDeny))
 }
 
 func checkNetwork(cfg config.Config) Check {
@@ -281,15 +301,30 @@ func checkNetwork(cfg config.Config) Check {
 	case cfg.SecureCookies && origin != nil && origin.Scheme != "https":
 		return fail(c, "secure cookies are on but %s is not https, so browsers would drop the session cookie", cfg.PublicOrigin)
 	}
-	if listener, err := net.Listen("tcp", cfg.Address); err != nil {
-		if errors.Is(err, syscall.EADDRINUSE) {
-			c.Status, c.Detail = Warn, cfg.Address+" is already in use (is webpty already running?)"
-			return c
-		}
-		return fail(c, "cannot listen on %s: %v", cfg.Address, describe(err))
-	} else {
-		_ = listener.Close()
+	if listenFailed, ok := probeListen(c, cfg.Address); !ok {
+		return listenFailed
 	}
+	return describeExposure(c, cfg, loopback, origin)
+}
+
+// probeListen reports ok when cfg.Address can be bound right now; a port
+// already in use is only a warning, since webpty may be running.
+func probeListen(c Check, address string) (Check, bool) {
+	listener, err := net.Listen("tcp", address)
+	if err == nil {
+		_ = listener.Close()
+		return c, true
+	}
+	if errors.Is(err, syscall.EADDRINUSE) {
+		c.Status, c.Detail = Warn, address+" is already in use (is webpty already running?)"
+		return c, false
+	}
+	return fail(c, "cannot listen on %s: %v", address, describe(err)), false
+}
+
+// describeExposure explains who can reach the server and warns about
+// plain-HTTP exposure or cookies that could leak.
+func describeExposure(c Check, cfg config.Config, loopback bool, origin *url.URL) Check {
 	switch {
 	case loopback && origin == nil:
 		c.Detail = cfg.Address + " accepts connections from this machine only"

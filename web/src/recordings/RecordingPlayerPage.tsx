@@ -40,6 +40,9 @@ const failureCopy: Record<string, string> = {
 }
 
 const seekStepMs = 5_000
+// PageUp/PageDown jump a tenth of the recording; the slider snaps to 100 ms.
+const pageStepFraction = 10
+const sliderStepMs = 100
 
 export function RecordingPlayerPage() {
   const { id = '' } = useParams()
@@ -158,8 +161,8 @@ function PlayerView({
       ArrowDown: position - seekStepMs,
       ArrowRight: position + seekStepMs,
       ArrowUp: position + seekStepMs,
-      PageDown: position - duration / 10,
-      PageUp: position + duration / 10,
+      PageDown: position - duration / pageStepFraction,
+      PageUp: position + duration / pageStepFraction,
     }
     if (!(event.key in targets)) return
     event.preventDefault()
@@ -222,7 +225,7 @@ function PlayerView({
             aria-label="Position"
             min={0}
             max={duration}
-            step={100}
+            step={sliderStepMs}
             value={position}
             aria-valuetext={`${formatClock(position)} of ${formatClock(duration)}`}
             onChange={(e) => player?.requestSeek(Number(e.target.value))}

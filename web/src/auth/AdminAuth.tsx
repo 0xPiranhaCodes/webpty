@@ -7,7 +7,7 @@ import {
   useState,
 } from 'react'
 
-import { ApiError, isAbortError } from '../api/client'
+import { ApiError, isAbortError, isUnauthorized } from '../api/client'
 import { useServices } from '../api/services'
 import { toApiError } from '../lib/useAsync'
 import { type AdminAuth, AuthContext, type AuthState } from './authContext'
@@ -33,7 +33,7 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
         const apiError = toApiError(error)
         setCsrf(undefined)
         setState(
-          apiError.status === 401
+          isUnauthorized(apiError)
             ? { status: 'anonymous' }
             : { status: 'error', error: apiError },
         )

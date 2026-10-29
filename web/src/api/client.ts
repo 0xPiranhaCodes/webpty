@@ -27,6 +27,9 @@ const statusCodes: Record<number, string> = {
   503: 'unavailable',
 }
 
+const httpNoContent = 204
+const httpServerErrorMin = 500
+
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
@@ -45,6 +48,18 @@ export class ApiError extends Error {
     this.retryAfterSeconds = retryAfterSeconds
   }
 }
+
+const httpBadRequest = 400
+const httpUnauthorized = 401
+const httpNotFound = 404
+
+export const isApiStatus = (error: unknown, status: number) =>
+  error instanceof ApiError && error.status === status
+export const isUnauthorized = (error: unknown) =>
+  isApiStatus(error, httpUnauthorized)
+export const isNotFound = (error: unknown) => isApiStatus(error, httpNotFound)
+export const isBadRequest = (error: unknown) =>
+  isApiStatus(error, httpBadRequest)
 
 export function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError'
@@ -68,7 +83,7 @@ const authPaths = new Set([
 function endsAdminSession(path: string, error: ApiError) {
   const pathname = path.split('?')[0]
   return (
-    error.status === 401 &&
+    error.status === httpUnauthorized &&
     error.code === 'unauthenticated' &&
     pathname.startsWith('/api/v1/admin/') &&
     !authPaths.has(pathname)
@@ -106,7 +121,7 @@ async function errorFrom(response: Response): Promise<ApiError> {
   code ||=
     messageCodes[message] ??
     statusCodes[response.status] ??
-    (response.status >= 500 ? 'internal' : 'error')
+    (response.status >= httpServerErrorMin ? 'internal' : 'error')
   const retry = Number(response.headers.get('Retry-After'))
   return new ApiError(
     response.status,
@@ -114,6 +129,76 @@ async function errorFrom(response: Response): Promise<ApiError> {
     message || `request failed (${response.status})`,
     Number.isFinite(retry) && retry > 0 ? retry : undefined,
   )
+}
+
+function requestHeaders(
+  method: string,
+  body: unknown,
+  csrf?: () => string | undefined,
+) {
+  const headers = new Headers({ Accept: 'application/json' })
+  if (method !== 'GET') {
+    const token = csrf?.()
+    if (token) headers.set('X-CSRF-Token', token)
+  }
+  if (body !== undefined) headers.set('Content-Type', 'application/json')
+  return headers
+}
+
+// Any failure to reach the server, other than a caller's abort, becomes one 'offline' error.
+async function send(
+  fetchImpl: typeof fetch,
+  method: string,
+  path: string,
+  body: unknown,
+  headers: Headers,
+  signal: AbortSignal | undefined,
+): Promise<Response> {
+  try {
+    return await fetchImpl(path, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal,
+    })
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) throw error
+    throw new ApiError(0, 'offline', 'the server could not be reached')
+  }
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json()
+  } catch (error) {
+    if (isAbortError(error)) throw error
+    throw new ApiError(
+      response.status,
+      'invalid_response',
+      'the server sent an unreadable response',
+    )
+  }
+}
+
+function decodePayload<T>(
+  response: Response,
+  payload: unknown,
+  decode: Decoder<T>,
+): T {
+  try {
+    return decode(payload)
+  } catch (error) {
+    if (error instanceof DecodeError) {
+      throw new ApiError(
+        response.status,
+        'invalid_response',
+        `the server sent an unexpected response (${error.path})`,
+      )
+    }
+    throw error
+  }
 }
 
 export function createApiClient(options: ApiClientOptions = {}): ApiClient {
@@ -128,58 +213,15 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
     decode: Decoder<T> | undefined,
     signal: AbortSignal | undefined,
   ): Promise<T> {
-    const headers = new Headers({ Accept: 'application/json' })
-    if (method !== 'GET') {
-      const token = options.csrf?.()
-      if (token) headers.set('X-CSRF-Token', token)
-    }
-    if (body !== undefined) headers.set('Content-Type', 'application/json')
-
-    let response: Response
-    try {
-      response = await fetchImpl(path, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        credentials: 'same-origin',
-        cache: 'no-store',
-        signal,
-      })
-    } catch (error) {
-      if (isAbortError(error) || signal?.aborted) throw error
-      throw new ApiError(0, 'offline', 'the server could not be reached')
-    }
-
+    const headers = requestHeaders(method, body, options.csrf)
+    const response = await send(fetchImpl, method, path, body, headers, signal)
     if (!response.ok) {
       const error = await errorFrom(response)
       if (endsAdminSession(path, error)) options.onAdminSessionEnded?.()
       throw error
     }
-    if (!decode || response.status === 204) return undefined as T
-
-    let payload: unknown
-    try {
-      payload = await response.json()
-    } catch (error) {
-      if (isAbortError(error)) throw error
-      throw new ApiError(
-        response.status,
-        'invalid_response',
-        'the server sent an unreadable response',
-      )
-    }
-    try {
-      return decode(payload)
-    } catch (error) {
-      if (error instanceof DecodeError) {
-        throw new ApiError(
-          response.status,
-          'invalid_response',
-          `the server sent an unexpected response (${error.path})`,
-        )
-      }
-      throw error
-    }
+    if (!decode || response.status === httpNoContent) return undefined as T
+    return decodePayload(response, await readJson(response), decode)
   }
 
   return {
