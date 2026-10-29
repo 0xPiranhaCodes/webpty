@@ -32,41 +32,89 @@ func Run(ctx context.Context, cfg config.Config) error {
 	return Serve(ctx, cfg, listener)
 }
 
+// terminateMargin is added to the kill grace when an admin terminates a
+// terminal, so the request waits for the SIGKILL that follows SIGTERM.
+const terminateMargin = 5 * time.Second
+
 // Serve opens the store, serves on listener, and shuts down gracefully when
 // ctx is done. It takes ownership of listener. Zero fields of cfg take their
 // defaults.
 func Serve(ctx context.Context, cfg config.Config, listener net.Listener) error {
 	cfg = config.WithDefaults(cfg)
-	if cfg.PublicOrigin == "" && !config.IsLoopbackAddress(listener.Addr().String()) {
-		_ = listener.Close()
-		return fmt.Errorf("listening on %s, which other hosts can reach, requires WEBPTY_PUBLIC_ORIGIN", listener.Addr())
-	}
-	policy, err := session.NewCommandPolicy(cfg.CommandAllow, cfg.CommandDeny)
-	if err != nil {
+	fail := func(err error) error {
 		_ = listener.Close()
 		return err
+	}
+	policy, err := preflight(cfg, listener.Addr())
+	if err != nil {
+		return fail(err)
 	}
 	unlock, err := store.LockDatabase(cfg.DatabasePath)
 	if err != nil {
-		_ = listener.Close()
-		return err
+		return fail(err)
 	}
 	defer func() { _ = unlock() }()
 	db, err := store.Open(ctx, cfg.DatabasePath)
 	if err != nil {
-		_ = listener.Close()
-		return err
+		return fail(err)
 	}
 	defer db.Close()
+	rt, err := newRuntime(ctx, cfg, db, policy)
+	if err != nil {
+		return fail(err)
+	}
+	defer rt.hub.Close()
+	return rt.serve(ctx, listener)
+}
 
-	service := auth.NewService(auth.ServiceConfig{
-		Store:        db,
-		SessionTTL:   cfg.SessionTTL,
-		BootstrapTTL: cfg.BootstrapTTL,
-	})
-	logger := slog.Default()
-	recordings, err := recording.New(ctx, recording.Config{
-		Store:             db,
+// preflight enforces the loopback default against the address actually
+// bound, and validates the command policy before anything is opened.
+func preflight(cfg config.Config, addr net.Addr) (*session.CommandPolicy, error) {
+	if cfg.PublicOrigin == "" && !config.IsLoopbackAddress(addr.String()) {
+		return nil, fmt.Errorf("listening on %s, which other hosts can reach, requires WEBPTY_PUBLIC_ORIGIN", addr)
+	}
+	return session.NewCommandPolicy(cfg.CommandAllow, cfg.CommandDeny)
+}
+
+// runtime holds the long-lived services Serve wires together.
+type runtime struct {
+	cfg        config.Config
+	db         *store.Store
+	logger     *slog.Logger
+	auth       *auth.Service
+	recordings *recording.Service
+	hub        *collab.Hub
+	grants     *access.Service
+	manager    *session.Manager
+}
+
+// newRuntime builds the services in dependency order. On error it closes
+// the hub it created; the caller owns db.
+func newRuntime(ctx context.Context, cfg config.Config, db *store.Store, policy *session.CommandPolicy) (_ *runtime, err error) {
+	rt := &runtime{cfg: cfg, db: db, logger: slog.Default()}
+	rt.auth = auth.NewService(auth.ServiceConfig{Store: db, SessionTTL: cfg.SessionTTL, BootstrapTTL: cfg.BootstrapTTL})
+	if rt.recordings, err = recording.New(ctx, rt.recordingConfig()); err != nil {
+		return nil, err
+	}
+	rt.hub = collab.NewHub(collab.Config{MaxParticipants: cfg.MaxViewers, Observer: rt.recordings})
+	defer func() {
+		if err != nil {
+			rt.hub.Close()
+		}
+	}()
+	if rt.grants, err = access.NewService(rt.accessConfig()); err != nil {
+		return nil, err
+	}
+	if rt.manager, err = session.NewManager(ctx, rt.sessionConfig(policy)); err != nil {
+		return nil, err
+	}
+	return rt, nil
+}
+
+func (rt *runtime) recordingConfig() recording.Config {
+	cfg := rt.cfg
+	return recording.Config{
+		Store:             rt.db,
 		Disabled:          !cfg.RecordingEnabled,
 		QueueBytes:        cfg.RecordingQueueBytes,
 		ChunkBytes:        cfg.RecordingChunkBytes,
@@ -76,28 +124,25 @@ func Serve(ctx context.Context, cfg config.Config, listener net.Listener) error 
 		MaxRecordingBytes: cfg.RecordingMaxBytes,
 		ShutdownTimeout:   cfg.RecordingShutdownTimeout,
 		StartTimeout:      cfg.RecordingStartTimeout,
-		Logger:            logger,
-	})
-	if err != nil {
-		_ = listener.Close()
-		return err
+		Logger:            rt.logger,
 	}
-	hub := collab.NewHub(collab.Config{MaxParticipants: cfg.MaxViewers, Observer: recordings})
-	defer hub.Close()
-	grants, err := access.NewService(access.Config{
-		Store:           db,
-		Listener:        hub,
-		SessionTTL:      cfg.AccessSessionTTL,
-		DefaultGrantTTL: cfg.GrantDefaultTTL,
-		MaxGrantTTL:     cfg.GrantMaxTTL,
-		MaxRedemptions:  cfg.GrantMaxRedemptions,
-	})
-	if err != nil {
-		_ = listener.Close()
-		return err
+}
+
+func (rt *runtime) accessConfig() access.Config {
+	return access.Config{
+		Store:           rt.db,
+		Listener:        rt.hub,
+		SessionTTL:      rt.cfg.AccessSessionTTL,
+		DefaultGrantTTL: rt.cfg.GrantDefaultTTL,
+		MaxGrantTTL:     rt.cfg.GrantMaxTTL,
+		MaxRedemptions:  rt.cfg.GrantMaxRedemptions,
 	}
-	manager, err := session.NewManager(ctx, session.Config{
-		Store:            db,
+}
+
+func (rt *runtime) sessionConfig(policy *session.CommandPolicy) session.Config {
+	cfg := rt.cfg
+	return session.Config{
+		Store:            rt.db,
 		Starter:          pty.Unix{EnvPassthrough: cfg.ChildEnvPassthrough},
 		DefaultCommand:   pty.Command{Path: cfg.Command, Args: cfg.CommandArgs},
 		CommandPolicy:    policy,
@@ -107,76 +152,104 @@ func Serve(ctx context.Context, cfg config.Config, listener net.Listener) error 
 		KillGrace:        cfg.TerminalKillGrace,
 		ReplayBytes:      cfg.ReplayBytes,
 		ClientQueueBytes: cfg.ClientQueueBytes,
-		Logger:           logger,
-		OnEnd:            hub.EndTerminal,
-		Recorders:        recordings,
-	})
-	if err != nil {
-		_ = listener.Close()
-		return err
+		Logger:           rt.logger,
+		OnEnd:            rt.hub.EndTerminal,
+		Recorders:        rt.recordings,
 	}
-	security := httpapi.SecuritySettings{
-		PublicOrigin:  cfg.PublicOrigin,
-		SecureCookies: cfg.SecureCookies,
-	}
-	drain := httpapi.NewDrain()
-	handler := drain.Wrap(httpapi.NewRouter(
-		httpapi.WithAdminAuth(service, security, grants),
-		httpapi.WithTerminals(service, security, manager, httpapi.TerminalSettings{
-			WriteTimeout:     cfg.WSWriteTimeout,
-			PingInterval:     cfg.WSPingInterval,
-			TerminateTimeout: cfg.TerminalKillGrace + 5*time.Second,
-			Logger:           logger,
-			Access:           grants,
-			Presence:         hub,
-			Recordings:       recordings,
-		}),
-		httpapi.WithRecordings(service, security, recordings),
-		httpapi.WithConsole(service, security, db, runtimeSettings(cfg)),
-		httpapi.WithSPA(webassets.Dist()),
-	))
-	server := NewServer(cfg, handler)
+}
 
-	loopCtx, stopLoops := context.WithCancel(context.Background())
-	retentionDone := make(chan struct{})
-	go func() {
-		defer close(retentionDone)
-		runEvery(loopCtx, retentionInterval, func(ctx context.Context) { runRetention(ctx, recordings, logger) })
-	}()
-	sweepDone := make(chan struct{})
-	go func() {
-		defer close(sweepDone)
-		runEvery(loopCtx, cfg.SessionSweepInterval, func(ctx context.Context) { sweepSessions(ctx, db, logger) })
-	}()
-	// Recordings finish only after their sessions' final lifecycle events,
-	// and every handler, including hijacked WebSockets, ends before the
-	// store closes.
+func (rt *runtime) router() http.Handler {
+	security := httpapi.SecuritySettings{
+		PublicOrigin:  rt.cfg.PublicOrigin,
+		SecureCookies: rt.cfg.SecureCookies,
+	}
+	return httpapi.NewRouter(
+		httpapi.WithAdminAuth(rt.auth, security, rt.grants),
+		httpapi.WithTerminals(rt.auth, security, rt.manager, rt.terminalSettings()),
+		httpapi.WithRecordings(rt.auth, security, rt.recordings),
+		httpapi.WithConsole(rt.auth, security, rt.db, runtimeSettings(rt.cfg)),
+		httpapi.WithSPA(webassets.Dist()),
+	)
+}
+
+func (rt *runtime) terminalSettings() httpapi.TerminalSettings {
+	return httpapi.TerminalSettings{
+		WriteTimeout:     rt.cfg.WSWriteTimeout,
+		PingInterval:     rt.cfg.WSPingInterval,
+		TerminateTimeout: rt.cfg.TerminalKillGrace + terminateMargin,
+		Logger:           rt.logger,
+		Access:           rt.grants,
+		Presence:         rt.hub,
+		Recordings:       rt.recordings,
+	}
+}
+
+// serve runs the HTTP server and background jobs until ctx is done or the
+// server fails, then closes everything in order.
+func (rt *runtime) serve(ctx context.Context, listener net.Listener) error {
+	drain := httpapi.NewDrain()
+	server := NewServer(rt.cfg, drain.Wrap(rt.router()))
+	stopLoops := rt.startLoops()
 	closeAll := func() error {
 		stopLoops()
-		<-retentionDone
-		<-sweepDone
-		err := closeSessions(manager, cfg)
-		drainCtx, cancelDrain := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		if drainErr := drain.Close(drainCtx); drainErr != nil {
-			err = errors.Join(err, fmt.Errorf("close handlers: %w", drainErr))
-		}
-		cancelDrain()
-		if closeErr := recordings.Close(context.Background()); closeErr != nil {
-			err = errors.Join(err, closeErr)
-		}
-		return err
+		return rt.close(drain)
 	}
-
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
-
 	select {
 	case err := <-serveErr:
 		return errors.Join(fmt.Errorf("serve: %w", err), closeAll())
 	case <-ctx.Done():
 	}
+	return shutdown(server, rt.cfg.ShutdownTimeout, closeAll, serveErr)
+}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+// startLoops starts the periodic jobs; the returned func stops them and
+// waits for both to return.
+func (rt *runtime) startLoops() (stop func()) {
+	loopCtx, cancel := context.WithCancel(context.Background())
+	retentionDone := goDone(func() {
+		runEvery(loopCtx, retentionInterval, func(ctx context.Context) { runRetention(ctx, rt.recordings, rt.logger) })
+	})
+	sweepDone := goDone(func() {
+		runEvery(loopCtx, rt.cfg.SessionSweepInterval, func(ctx context.Context) { sweepSessions(ctx, rt.db, rt.logger) })
+	})
+	return func() {
+		cancel()
+		<-retentionDone
+		<-sweepDone
+	}
+}
+
+// goDone runs fn in a goroutine and returns a channel closed when it returns.
+func goDone(fn func()) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	return done
+}
+
+// close ends sessions, then handlers, then recordings: recordings finish
+// only after their sessions' final lifecycle events, and every handler,
+// including hijacked WebSockets, ends before the store closes.
+func (rt *runtime) close(drain *httpapi.Drain) error {
+	err := closeSessions(rt.manager, rt.cfg)
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), rt.cfg.ShutdownTimeout)
+	if drainErr := drain.Close(drainCtx); drainErr != nil {
+		err = errors.Join(err, fmt.Errorf("close handlers: %w", drainErr))
+	}
+	cancelDrain()
+	if closeErr := rt.recordings.Close(context.Background()); closeErr != nil {
+		err = errors.Join(err, closeErr)
+	}
+	return err
+}
+
+// shutdown stops the server gracefully, forcing it closed after timeout.
+func shutdown(server *http.Server, timeout time.Duration, closeAll func() error, serveErr <-chan error) error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	shutdownErr := server.Shutdown(shutdownCtx)
 	if shutdownErr != nil {
