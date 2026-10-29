@@ -79,7 +79,7 @@ supported natively; use WSL or Docker.
 ```sh
 curl -fsSL https://raw.githubusercontent.com/0xPiranhaCodes/webpty/main/scripts/install.sh | sh
 # or a specific version and directory:
-curl -fsSL https://raw.githubusercontent.com/0xPiranhaCodes/webpty/v1.0.0/scripts/install.sh | sh -s -- --version 1.0.0 --bin-dir "$HOME/bin"
+curl -fsSL https://raw.githubusercontent.com/0xPiranhaCodes/webpty/v1.0.1/scripts/install.sh | sh -s -- --version 1.0.1 --bin-dir "$HOME/bin"
 ```
 
 **Homebrew**: each release attaches a signed `webpty.rb` formula. Homebrew
@@ -91,8 +91,8 @@ needs [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
 you install; each release's notes give the exact commands:
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/0xPiranhaCodes/webpty/v1.0.0/scripts/homebrew-tap.sh
-sh homebrew-tap.sh --version 1.0.0
+curl -fsSLO https://raw.githubusercontent.com/0xPiranhaCodes/webpty/v1.0.1/scripts/homebrew-tap.sh
+sh homebrew-tap.sh --version 1.0.1
 ```
 
 To upgrade, run the same two commands for the new version. The signature must
@@ -109,7 +109,7 @@ docker run -d --name webpty -p 127.0.0.1:8000:8000 -v webpty-data:/data ghcr.io/
 **Binary archive**:
 
 ```sh
-VERSION=1.0.0
+VERSION=1.0.1
 curl -fsSLO https://github.com/0xPiranhaCodes/webpty/releases/download/v$VERSION/webpty_${VERSION}_darwin_arm64.tar.gz
 curl -fsSLO https://github.com/0xPiranhaCodes/webpty/releases/download/v$VERSION/webpty_${VERSION}_checksums.txt
 shasum -a 256 --check --ignore-missing webpty_${VERSION}_checksums.txt
