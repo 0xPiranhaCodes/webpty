@@ -112,51 +112,101 @@ func Load() (Config, error) {
 	return LoadFrom(os.LookupEnv)
 }
 
-// LoadFrom reads configuration using lookup. Unset or empty values use defaults.
-func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
-	get := func(key string) string {
-		value, _ := lookup(key)
-		return value
-	}
-	cfg := Config{
-		Address:      stringOr(get("WEBPTY_ADDRESS"), "127.0.0.1:8000"),
-		DatabasePath: stringOr(get("WEBPTY_DATABASE_PATH"), "webpty.db"),
-		PublicOrigin: get("WEBPTY_PUBLIC_ORIGIN"),
-		Command:      stringOr(get("WEBPTY_COMMAND"), stringOr(get("SHELL"), "/bin/sh")),
-	}
+// Defaults that are not durations or plain integers.
+const (
+	defaultAddress      = "127.0.0.1:8000"
+	defaultDatabasePath = "webpty.db"
+	defaultCommand      = "/bin/sh"
+	// defaultShutdownMargin is how much longer than the kill grace shutdown
+	// waits for terminals, so a SIGTERMed child can still exit on its own.
+	defaultShutdownMargin    = 5 * time.Second
+	defaultRecordingMaxBytes = 256 << 20
+)
 
-	var errs []error
+// loader reads environment values and collects every validation error, so
+// one run reports all bad settings instead of the first one.
+type loader struct {
+	lookup func(string) (string, bool)
+	errs   []error
+}
+
+func (l *loader) get(key string) string {
+	value, _ := l.lookup(key)
+	return value
+}
+
+func (l *loader) fail(err error) {
+	l.errs = append(l.errs, err)
+}
+
+func (l *loader) failf(format string, args ...any) {
+	l.fail(fmt.Errorf(format, args...))
+}
+
+// LoadFrom reads configuration using lookup. Unset or empty values use defaults.
+// The steps run in a fixed order so the joined error message is stable.
+func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
+	l := &loader{lookup: lookup}
+	cfg := l.loadStrings()
+	l.loadBools(&cfg)
+	l.loadDurations(&cfg)
+	l.loadIntegers(&cfg)
+	l.loadRecordingMaxBytes(&cfg)
+	l.checkRecordingBounds(cfg)
+	l.loadCommandPolicy(&cfg)
+	l.loadChildEnv(&cfg)
+	if err := errors.Join(l.errs...); err != nil {
+		return Config{}, fmt.Errorf("invalid configuration: %w", err)
+	}
+	return cfg, nil
+}
+
+func (l *loader) loadStrings() Config {
+	cfg := Config{
+		Address:      stringOr(l.get("WEBPTY_ADDRESS"), defaultAddress),
+		DatabasePath: stringOr(l.get("WEBPTY_DATABASE_PATH"), defaultDatabasePath),
+		PublicOrigin: l.get("WEBPTY_PUBLIC_ORIGIN"),
+		Command:      stringOr(l.get("WEBPTY_COMMAND"), stringOr(l.get("SHELL"), defaultCommand)),
+	}
 	if strings.IndexByte(cfg.Command, 0) >= 0 {
-		errs = append(errs, errors.New("WEBPTY_COMMAND: must not contain a NUL byte"))
+		l.fail(errors.New("WEBPTY_COMMAND: must not contain a NUL byte"))
 	}
 	if cfg.PublicOrigin != "" {
 		if err := validateOrigin(cfg.PublicOrigin); err != nil {
-			errs = append(errs, err)
+			l.fail(err)
 		}
 	}
+	return cfg
+}
 
-	cfg.SecureCookies = strings.HasPrefix(cfg.PublicOrigin, "https://")
-	if raw := get("WEBPTY_SECURE_COOKIES"); raw != "" {
-		secure, err := strconv.ParseBool(raw)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("WEBPTY_SECURE_COOKIES: %q is not a boolean", raw))
-		}
-		cfg.SecureCookies = secure
-	}
-	cfg.RecordingEnabled = true
-	if raw := get("WEBPTY_RECORDING_ENABLED"); raw != "" {
-		enabled, err := strconv.ParseBool(raw)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("WEBPTY_RECORDING_ENABLED: %q is not a boolean", raw))
-		}
-		cfg.RecordingEnabled = enabled
-	}
+func (l *loader) loadBools(cfg *Config) {
+	cfg.SecureCookies = l.boolOr("WEBPTY_SECURE_COOKIES", strings.HasPrefix(cfg.PublicOrigin, "https://"))
+	cfg.RecordingEnabled = l.boolOr("WEBPTY_RECORDING_ENABLED", true)
+}
 
-	durations := []struct {
-		key      string
-		target   *time.Duration
-		fallback time.Duration
-	}{
+// boolOr parses key, keeping fallback when unset. An invalid value is
+// reported and, as before this refactor, still assigned as false.
+func (l *loader) boolOr(key string, fallback bool) bool {
+	raw := l.get(key)
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		l.failf("%s: %q is not a boolean", key, raw)
+	}
+	return value
+}
+
+type durationSetting struct {
+	key      string
+	target   *time.Duration
+	fallback time.Duration
+}
+
+func durationSettings(cfg *Config) []durationSetting {
+	const day = 24 * time.Hour
+	return []durationSetting{
 		{"WEBPTY_READ_HEADER_TIMEOUT", &cfg.ReadHeaderTimeout, 5 * time.Second},
 		{"WEBPTY_READ_TIMEOUT", &cfg.ReadTimeout, 15 * time.Second},
 		{"WEBPTY_WRITE_TIMEOUT", &cfg.WriteTimeout, 30 * time.Second},
@@ -169,48 +219,66 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		{"WEBPTY_WS_WRITE_TIMEOUT", &cfg.WSWriteTimeout, 10 * time.Second},
 		{"WEBPTY_WS_PING_INTERVAL", &cfg.WSPingInterval, 30 * time.Second},
 		{"WEBPTY_ACCESS_SESSION_TTL", &cfg.AccessSessionTTL, 12 * time.Hour},
-		{"WEBPTY_GRANT_DEFAULT_TTL", &cfg.GrantDefaultTTL, 24 * time.Hour},
-		{"WEBPTY_GRANT_MAX_TTL", &cfg.GrantMaxTTL, 7 * 24 * time.Hour},
+		{"WEBPTY_GRANT_DEFAULT_TTL", &cfg.GrantDefaultTTL, day},
+		{"WEBPTY_GRANT_MAX_TTL", &cfg.GrantMaxTTL, 7 * day},
 		{"WEBPTY_RECORDING_FLUSH_INTERVAL", &cfg.RecordingFlushInterval, time.Second},
-		{"WEBPTY_RECORDING_RETENTION", &cfg.RecordingRetention, 30 * 24 * time.Hour},
+		{"WEBPTY_RECORDING_RETENTION", &cfg.RecordingRetention, 30 * day},
 		{"WEBPTY_RECORDING_SHUTDOWN_TIMEOUT", &cfg.RecordingShutdownTimeout, 5 * time.Second},
 		{"WEBPTY_RECORDING_START_TIMEOUT", &cfg.RecordingStartTimeout, time.Second},
 		{"WEBPTY_SESSION_SWEEP_INTERVAL", &cfg.SessionSweepInterval, 10 * time.Minute},
 	}
-	for _, d := range durations {
+}
+
+func (l *loader) loadDurations(cfg *Config) {
+	for _, d := range durationSettings(cfg) {
 		*d.target = d.fallback
-		raw := get(d.key)
-		if raw == "" {
-			continue
+		if value, ok := l.positiveDuration(d.key); ok {
+			*d.target = value
 		}
-		value, err := time.ParseDuration(raw)
-		if err != nil || value <= 0 {
-			errs = append(errs, fmt.Errorf("%s: %q is not a positive duration", d.key, raw))
-			continue
-		}
-		*d.target = value
 	}
 	if cfg.GrantDefaultTTL < minGrantTTL || cfg.GrantDefaultTTL > cfg.GrantMaxTTL {
-		errs = append(errs, errors.New("WEBPTY_GRANT_DEFAULT_TTL must be at least 1m and at most WEBPTY_GRANT_MAX_TTL"))
+		l.fail(errors.New("WEBPTY_GRANT_DEFAULT_TTL must be at least 1m and at most WEBPTY_GRANT_MAX_TTL"))
 	}
-	cfg.TerminalShutdownTimeout = cfg.TerminalKillGrace + 5*time.Second
-	if raw := get("WEBPTY_TERMINAL_SHUTDOWN_TIMEOUT"); raw != "" {
-		value, err := time.ParseDuration(raw)
-		switch {
-		case err != nil || value <= 0:
-			errs = append(errs, fmt.Errorf("WEBPTY_TERMINAL_SHUTDOWN_TIMEOUT: %q is not a positive duration", raw))
-		case value <= cfg.TerminalKillGrace:
-			errs = append(errs, errors.New("WEBPTY_TERMINAL_SHUTDOWN_TIMEOUT must exceed WEBPTY_TERMINAL_KILL_GRACE"))
-		default:
-			cfg.TerminalShutdownTimeout = value
-		}
-	}
+	l.loadTerminalShutdownTimeout(cfg)
+}
 
-	integers := []struct {
-		key      string
-		target   *int
-		fallback int
-	}{
+// positiveDuration parses key; ok is false when it is unset or invalid,
+// and an invalid value is reported.
+func (l *loader) positiveDuration(key string) (value time.Duration, ok bool) {
+	raw := l.get(key)
+	if raw == "" {
+		return 0, false
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value <= 0 {
+		l.failf("%s: %q is not a positive duration", key, raw)
+		return 0, false
+	}
+	return value, true
+}
+
+// loadTerminalShutdownTimeout depends on TerminalKillGrace, so it runs
+// after the plain durations.
+func (l *loader) loadTerminalShutdownTimeout(cfg *Config) {
+	cfg.TerminalShutdownTimeout = cfg.TerminalKillGrace + defaultShutdownMargin
+	value, ok := l.positiveDuration("WEBPTY_TERMINAL_SHUTDOWN_TIMEOUT")
+	switch {
+	case !ok:
+	case value <= cfg.TerminalKillGrace:
+		l.fail(errors.New("WEBPTY_TERMINAL_SHUTDOWN_TIMEOUT must exceed WEBPTY_TERMINAL_KILL_GRACE"))
+	default:
+		cfg.TerminalShutdownTimeout = value
+	}
+}
+
+type integerSetting struct {
+	key      string
+	target   *int
+	fallback int
+}
+
+func integerSettings(cfg *Config) []integerSetting {
+	return []integerSetting{
 		{"WEBPTY_MAX_SESSIONS", &cfg.MaxSessions, 16},
 		{"WEBPTY_MAX_VIEWERS", &cfg.MaxViewers, 8},
 		{"WEBPTY_REPLAY_BYTES", &cfg.ReplayBytes, 256 << 10},
@@ -220,74 +288,84 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		{"WEBPTY_RECORDING_CHUNK_BYTES", &cfg.RecordingChunkBytes, 64 << 10},
 		{"WEBPTY_RECORDING_CHUNK_EVENTS", &cfg.RecordingChunkEvents, 1024},
 	}
-	for _, n := range integers {
+}
+
+func (l *loader) loadIntegers(cfg *Config) {
+	for _, n := range integerSettings(cfg) {
 		*n.target = n.fallback
-		raw := get(n.key)
-		if raw == "" {
-			continue
+		if raw := l.get(n.key); raw != "" {
+			if value, err := strconv.Atoi(raw); err != nil || value <= 0 {
+				l.failf("%s: %q is not a positive integer", n.key, raw)
+			} else {
+				*n.target = value
+			}
 		}
-		value, err := strconv.Atoi(raw)
-		if err != nil || value <= 0 {
-			errs = append(errs, fmt.Errorf("%s: %q is not a positive integer", n.key, raw))
-			continue
-		}
-		*n.target = value
 	}
 	if cfg.ClientQueueBytes < cfg.ReplayBytes {
-		errs = append(errs, errors.New("WEBPTY_CLIENT_QUEUE_BYTES must be at least WEBPTY_REPLAY_BYTES"))
+		l.fail(errors.New("WEBPTY_CLIENT_QUEUE_BYTES must be at least WEBPTY_REPLAY_BYTES"))
 	}
 	if cfg.ReplayBytes < minStreamBufferBytes {
-		errs = append(errs, fmt.Errorf("WEBPTY_REPLAY_BYTES must be at least %d", minStreamBufferBytes))
+		l.failf("WEBPTY_REPLAY_BYTES must be at least %d", minStreamBufferBytes)
 	}
-	cfg.RecordingMaxBytes = 256 << 20
-	if raw := get("WEBPTY_RECORDING_MAX_BYTES"); raw != "" {
-		value, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || value <= 0 {
-			errs = append(errs, fmt.Errorf("WEBPTY_RECORDING_MAX_BYTES: %q is not a positive integer", raw))
-		} else {
-			cfg.RecordingMaxBytes = value
-		}
+}
+
+func (l *loader) loadRecordingMaxBytes(cfg *Config) {
+	cfg.RecordingMaxBytes = defaultRecordingMaxBytes
+	raw := l.get("WEBPTY_RECORDING_MAX_BYTES")
+	if raw == "" {
+		return
 	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		l.failf("WEBPTY_RECORDING_MAX_BYTES: %q is not a positive integer", raw)
+		return
+	}
+	cfg.RecordingMaxBytes = value
+}
+
+func (l *loader) checkRecordingBounds(cfg Config) {
 	if cfg.RecordingQueueBytes < minRecordingQueueBytes {
-		errs = append(errs, fmt.Errorf("WEBPTY_RECORDING_QUEUE_BYTES must be at least %d", minRecordingQueueBytes))
+		l.failf("WEBPTY_RECORDING_QUEUE_BYTES must be at least %d", minRecordingQueueBytes)
 	}
 	if cfg.RecordingChunkBytes < minRecordingChunkBytes || cfg.RecordingChunkBytes > maxRecordingChunkBytes {
-		errs = append(errs, fmt.Errorf("WEBPTY_RECORDING_CHUNK_BYTES must be %d..%d", minRecordingChunkBytes, maxRecordingChunkBytes))
+		l.failf("WEBPTY_RECORDING_CHUNK_BYTES must be %d..%d", minRecordingChunkBytes, maxRecordingChunkBytes)
 	}
 	if cfg.RecordingChunkEvents > maxRecordingChunkEvents {
-		errs = append(errs, fmt.Errorf("WEBPTY_RECORDING_CHUNK_EVENTS must be at most %d", maxRecordingChunkEvents))
+		l.failf("WEBPTY_RECORDING_CHUNK_EVENTS must be at most %d", maxRecordingChunkEvents)
 	}
 	if cfg.RecordingMaxBytes < int64(cfg.RecordingChunkBytes) {
-		errs = append(errs, errors.New("WEBPTY_RECORDING_MAX_BYTES must be at least WEBPTY_RECORDING_CHUNK_BYTES"))
+		l.fail(errors.New("WEBPTY_RECORDING_MAX_BYTES must be at least WEBPTY_RECORDING_CHUNK_BYTES"))
 	}
+}
 
+// loadCommandPolicy also enforces the loopback default: a non-loopback
+// listener needs an explicit public origin.
+func (l *loader) loadCommandPolicy(cfg *Config) {
 	if cfg.PublicOrigin == "" && !IsLoopbackAddress(cfg.Address) {
-		errs = append(errs, fmt.Errorf("WEBPTY_ADDRESS %q is reachable from other hosts; set WEBPTY_PUBLIC_ORIGIN to the URL browsers use", cfg.Address))
+		l.failf("WEBPTY_ADDRESS %q is reachable from other hosts; set WEBPTY_PUBLIC_ORIGIN to the URL browsers use", cfg.Address)
 	}
-	cfg.CommandAllow = pathList(get("WEBPTY_COMMAND_ALLOW"))
-	cfg.CommandDeny = pathList(get("WEBPTY_COMMAND_DENY"))
+	cfg.CommandAllow = pathList(l.get("WEBPTY_COMMAND_ALLOW"))
+	cfg.CommandDeny = pathList(l.get("WEBPTY_COMMAND_DENY"))
 	for key, paths := range map[string][]string{"WEBPTY_COMMAND_ALLOW": cfg.CommandAllow, "WEBPTY_COMMAND_DENY": cfg.CommandDeny} {
 		for _, path := range paths {
 			if !filepath.IsAbs(path) {
-				errs = append(errs, fmt.Errorf("%s: %q is not an absolute path", key, path))
+				l.failf("%s: %q is not an absolute path", key, path)
 			}
 		}
 	}
 	if err := cfg.checkCommand(); err != nil {
-		errs = append(errs, err)
+		l.fail(err)
 	}
-	for _, name := range nameList(get("WEBPTY_CHILD_ENV_PASSTHROUGH")) {
+}
+
+func (l *loader) loadChildEnv(cfg *Config) {
+	for _, name := range nameList(l.get("WEBPTY_CHILD_ENV_PASSTHROUGH")) {
 		if !envName.MatchString(name) || strings.HasPrefix(name, "WEBPTY_") {
-			errs = append(errs, fmt.Errorf("WEBPTY_CHILD_ENV_PASSTHROUGH: %q is not a passable variable name", name))
+			l.failf("WEBPTY_CHILD_ENV_PASSTHROUGH: %q is not a passable variable name", name)
 			continue
 		}
 		cfg.ChildEnvPassthrough = append(cfg.ChildEnvPassthrough, name)
 	}
-
-	if err := errors.Join(errs...); err != nil {
-		return Config{}, fmt.Errorf("invalid configuration: %w", err)
-	}
-	return cfg, nil
 }
 
 // WithDefaults returns cfg with every zero-valued field, other than
@@ -338,18 +416,16 @@ func IsLoopbackAddress(address string) bool {
 
 // pathList splits a PATH-style list, dropping empty entries.
 func pathList(raw string) []string {
-	var out []string
-	for _, entry := range filepath.SplitList(raw) {
-		if entry = strings.TrimSpace(entry); entry != "" {
-			out = append(out, entry)
-		}
-	}
-	return out
+	return trimmedNonEmpty(filepath.SplitList(raw))
 }
 
 func nameList(raw string) []string {
+	return trimmedNonEmpty(strings.Split(raw, ","))
+}
+
+func trimmedNonEmpty(entries []string) []string {
 	var out []string
-	for _, entry := range strings.Split(raw, ",") {
+	for _, entry := range entries {
 		if entry = strings.TrimSpace(entry); entry != "" {
 			out = append(out, entry)
 		}
