@@ -53,14 +53,21 @@ export const terminalTheme = {
   brightWhite: '#f4f7fb',
 }
 
+const fontSizePx = 14
+const lineHeight = 1.15
+const scrollbackLines = 5000
+// xterm.js cannot render below this size.
+const minCols = 2
+const minRows = 1
+
 export const createXterm: XtermFactory = (container, options = {}) => {
   const terminal = new Terminal({
     theme: terminalTheme,
     fontFamily: "'IBM Plex Mono', ui-monospace, Menlo, monospace",
-    fontSize: 14,
-    lineHeight: 1.15,
+    fontSize: fontSizePx,
+    lineHeight,
     cursorBlink: false,
-    scrollback: 5000,
+    scrollback: scrollbackLines,
     allowProposedApi: false,
     screenReaderMode: false,
   })
@@ -87,7 +94,10 @@ export const createXterm: XtermFactory = (container, options = {}) => {
       const size = fit.proposeDimensions()
       if (!size || !Number.isFinite(size.cols) || !Number.isFinite(size.rows))
         return null
-      return { cols: Math.max(2, size.cols), rows: Math.max(1, size.rows) }
+      return {
+        cols: Math.max(minCols, size.cols),
+        rows: Math.max(minRows, size.rows),
+      }
     },
     setInputEnabled: (enabled) => {
       terminal.options.disableStdin = !enabled

@@ -13,6 +13,9 @@ export interface RenderQueueOptions {
   onIdleChange?: (idle: boolean) => void
 }
 
+// Small enough that one unparsed chunk never stalls xterm's parser noticeably.
+const defaultMaxChunkBytes = 64 * 1024
+
 type Op =
   | { kind: 'write'; parts: Uint8Array[]; size: number }
   | { kind: 'resize'; cols: number; rows: number }
@@ -40,7 +43,7 @@ export class RenderQueue {
     private readonly terminal: WritableTerminal,
     options: RenderQueueOptions = {},
   ) {
-    this.maxChunk = options.maxChunkBytes ?? 64 * 1024
+    this.maxChunk = options.maxChunkBytes ?? defaultMaxChunkBytes
     this.onIdleChange = options.onIdleChange
   }
 

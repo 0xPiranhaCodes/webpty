@@ -16,6 +16,14 @@ import {
 
 const seg = encodeURIComponent
 
+// Shared path builders, so each URL shape is spelled once.
+const terminalPath = (id: string) => `/api/v1/admin/terminals/${seg(id)}`
+const grantsPath = (terminalId: string) => `${terminalPath(terminalId)}/grants`
+const recordingPath = (id: string) => `/api/v1/admin/recordings/${seg(id)}`
+
+const defaultRecordingListLimit = 100
+const auditPageSize = 50
+
 const terminalList = object({ sessions: arrayOf(decodeTerminal) })
 const grantList = object({ grants: arrayOf(decodeGrant) })
 const recordingList = object({
@@ -51,7 +59,7 @@ export function createApi(client: ApiClient) {
   ) => {
     const query = new URLSearchParams()
     if (options.terminalId) query.set('terminalId', options.terminalId)
-    query.set('limit', String(options.limit ?? 100))
+    query.set('limit', String(options.limit ?? defaultRecordingListLimit))
     if (options.before) query.set('before', options.before)
     const page = await client.get(
       `/api/v1/admin/recordings?${query}`,
@@ -74,7 +82,7 @@ export function createApi(client: ApiClient) {
       (await client.get('/api/v1/admin/terminals', terminalList, signal))
         .sessions,
     getTerminal: (id: string, signal?: AbortSignal) =>
-      client.get(`/api/v1/admin/terminals/${seg(id)}`, decodeTerminal, signal),
+      client.get(terminalPath(id), decodeTerminal, signal),
     createTerminal: (request: CreateTerminalRequest) => {
       const body: Record<string, unknown> = {}
       if (request.command) body.command = request.command
@@ -85,27 +93,14 @@ export function createApi(client: ApiClient) {
       return client.post('/api/v1/admin/terminals', body, decodeTerminal)
     },
     terminateTerminal: (id: string) =>
-      client.del(`/api/v1/admin/terminals/${seg(id)}`, decodeTerminal),
+      client.del(terminalPath(id), decodeTerminal),
 
     listGrants: async (terminalId: string, signal?: AbortSignal) =>
-      (
-        await client.get(
-          `/api/v1/admin/terminals/${seg(terminalId)}/grants`,
-          grantList,
-          signal,
-        )
-      ).grants,
+      (await client.get(grantsPath(terminalId), grantList, signal)).grants,
     createGrant: (terminalId: string, request: CreateGrantRequest) =>
-      client.post(
-        `/api/v1/admin/terminals/${seg(terminalId)}/grants`,
-        request,
-        decodeCreatedGrant,
-      ),
+      client.post(grantsPath(terminalId), request, decodeCreatedGrant),
     revokeGrant: (terminalId: string, grantId: string) =>
-      client.del(
-        `/api/v1/admin/terminals/${seg(terminalId)}/grants/${seg(grantId)}`,
-        decodeGrant,
-      ),
+      client.del(`${grantsPath(terminalId)}/${seg(grantId)}`, decodeGrant),
 
     redeem: (token: string) =>
       client.post('/api/v1/access/redeem', { token }, decodeGuestSession),
@@ -119,11 +114,7 @@ export function createApi(client: ApiClient) {
     ) => (await recordingsPage(options, signal)).recordings,
     recordingsPage,
     getRecording: (id: string, signal?: AbortSignal) =>
-      client.get(
-        `/api/v1/admin/recordings/${seg(id)}`,
-        decodeRecording,
-        signal,
-      ),
+      client.get(recordingPath(id), decodeRecording, signal),
     recordingEvents: (
       id: string,
       cursor: PlaybackCursor,
@@ -135,13 +126,13 @@ export function createApi(client: ApiClient) {
         limit: String(recordingPageSize),
       })
       return client.get(
-        `/api/v1/admin/recordings/${seg(id)}/events?${query}`,
+        `${recordingPath(id)}/events?${query}`,
         decodeEventsPage,
         signal,
       )
     },
     deleteRecording: (id: string) =>
-      client.del(`/api/v1/admin/recordings/${seg(id)}`, decodeRecording),
+      client.del(recordingPath(id), decodeRecording),
     runRetention: async () =>
       (
         await client.post(
@@ -150,10 +141,10 @@ export function createApi(client: ApiClient) {
           retentionResult,
         )
       ).deleted,
-    exportUrl: (id: string) => `/api/v1/admin/recordings/${seg(id)}/export`,
+    exportUrl: (id: string) => `${recordingPath(id)}/export`,
 
     auditPage: (cursor?: string, signal?: AbortSignal) => {
-      const query = new URLSearchParams({ limit: '50' })
+      const query = new URLSearchParams({ limit: String(auditPageSize) })
       if (cursor) query.set('cursor', cursor)
       return client.get(`/api/v1/admin/audit?${query}`, decodeAuditPage, signal)
     },

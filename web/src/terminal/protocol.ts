@@ -96,7 +96,10 @@ export type ServerMessage =
   | Exclude<Raw[keyof Raw], Raw['output']>
   | OutputMessage
 
-const validSize = (n: number) => Number.isInteger(n) && n > 0 && n <= 1000
+// Mirrors the server's terminal size bound; anything larger is a malformed frame.
+const maxTerminalDimension = 1000
+const validSize = (n: number) =>
+  Number.isInteger(n) && n > 0 && n <= maxTerminalDimension
 
 /** Parses one server frame; malformed or unknown frames yield null. */
 export function parseServerMessage(raw: string): ServerMessage | null {

@@ -1,9 +1,9 @@
 import { LogOut } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 
-import { ApiError } from '../api/client'
+import { ApiError, isUnauthorized } from '../api/client'
 import { useServices } from '../api/services'
-import type { GuestSession } from '../api/types'
+import { type GuestSession, isLiveState } from '../api/types'
 import { AuthFrame } from '../auth/AuthFrame'
 import { InlineError, Loading } from '../components/StateViews'
 import { toApiError } from '../lib/useAsync'
@@ -20,6 +20,9 @@ type JoinState =
   | { kind: 'joined'; session: GuestSession }
   | { kind: 'failed'; error: ApiError }
   | { kind: 'left' }
+
+// Used when a 429 arrives without a Retry-After header.
+const defaultRetryAfterSeconds = 60
 
 const endedCopy: Partial<Record<EndReason, string>> = {
   exited: 'The terminal ended. There is nothing more to watch.',
@@ -52,7 +55,7 @@ function failureCopy(error: ApiError): { title: string; body: ReactNode } {
     case 'rate_limited':
       return {
         title: 'Too many attempts',
-        body: `Wait ${error.retryAfterSeconds ?? 60} seconds, then open the link again.`,
+        body: `Wait ${error.retryAfterSeconds ?? defaultRetryAfterSeconds} seconds, then open the link again.`,
       }
     case 'offline':
       return {
@@ -99,7 +102,7 @@ export function JoinPage() {
     try {
       await api.guestLogout()
     } catch (e) {
-      if (!(e instanceof ApiError && e.status === 401)) {
+      if (!isUnauthorized(e)) {
         setLeaveError(true)
         return
       }
@@ -141,14 +144,9 @@ export function JoinPage() {
   const probe = async (): Promise<ProbeResult> => {
     try {
       const current = await api.guestSession()
-      return current.terminal.state === 'running' ||
-        current.terminal.state === 'starting'
-        ? 'retry'
-        : { ended: 'exited' }
+      return isLiveState(current.terminal.state) ? 'retry' : { ended: 'exited' }
     } catch (e) {
-      return e instanceof ApiError && e.status === 401
-        ? { ended: 'expired' }
-        : 'retry'
+      return isUnauthorized(e) ? { ended: 'expired' } : 'retry'
     }
   }
   const onState = (next: ConnectionState) =>
