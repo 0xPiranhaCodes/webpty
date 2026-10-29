@@ -6,7 +6,7 @@ change is accepted.
 
 ## Prerequisites
 
-- Go 1.26.8 (the toolchain declared in `go.mod`; newer Go versions can download
+- Go 1.26.10 (the toolchain declared in `go.mod`; newer Go versions can download
   it automatically)
 - Node.js 22.23.2 with npm
 - Git and curl

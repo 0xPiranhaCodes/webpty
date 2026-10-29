@@ -29,7 +29,7 @@ grants, effective settings, and audit history.
 ## Runtime architecture
 
 The application is distributed as one Go binary. The supported toolchain is
-Go 1.26.8, pinned in `go.mod`; release builders and validation must use the
+Go 1.26.10, pinned in `go.mod`; release builders and validation must use the
 same patch release. Standard-library `net/http` serves the versioned `/api/v1`
 API, operational endpoints such as `GET /healthz`, WebSockets, and embedded
 frontend assets.

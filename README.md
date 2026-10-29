@@ -7,7 +7,7 @@
 [![CI](https://github.com/0xPiranhaCodes/webpty/actions/workflows/ci.yml/badge.svg)](https://github.com/0xPiranhaCodes/webpty/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/0xPiranhaCodes/webpty/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/0xPiranhaCodes/webpty/actions/workflows/codeql-analysis.yml)
 [![Release](https://img.shields.io/github/v/release/0xPiranhaCodes/webpty?include_prereleases&sort=semver)](https://github.com/0xPiranhaCodes/webpty/releases)
-[![Go 1.26.8](https://img.shields.io/badge/Go-1.26.8-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Go 1.26.10](https://img.shields.io/badge/Go-1.26.10-00ADD8?logo=go&logoColor=white)](go.mod)
 [![macOS and Linux](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-555)](#install)
 [![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -119,7 +119,7 @@ tar -xzf webpty_${VERSION}_darwin_arm64.tar.gz webpty && ./webpty version
 [docs/upgrading.md](docs/upgrading.md#verifying-a-release) shows how to
 verify the signatures and provenance of any download.
 
-**From source** (Go 1.26.8 and Node.js 22.23.2):
+**From source** (Go 1.26.10 and Node.js 22.23.2):
 
 ```sh
 git clone https://github.com/0xPiranhaCodes/webpty && cd webpty
@@ -226,7 +226,7 @@ make e2e           # Chromium and WebKit end-to-end and accessibility suites
 make snapshot      # local release archives and formula in dist/ with checksum, SBOM, and clean-install checks
 ```
 
-Prerequisites: Go 1.26.8 (the toolchain in `go.mod`; any newer Go
+Prerequisites: Go 1.26.10 (the toolchain in `go.mod`; any newer Go
 downloads it automatically), Node.js 22.23.2 with npm, git,
 and curl. `make check` also needs [shellcheck](https://www.shellcheck.net/)
 and [hadolint](https://github.com/hadolint/hadolint) on `PATH`. Without them,
