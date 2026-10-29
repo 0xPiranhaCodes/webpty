@@ -32,6 +32,18 @@ const (
 	persistTimeout = 5 * time.Second
 )
 
+// Defaults for zero Config fields; they match the config package's.
+const (
+	defaultCommandPath      = "/bin/sh"
+	defaultMaxSessions      = 16
+	defaultMaxViewers       = 8
+	defaultKillGrace        = 5 * time.Second
+	defaultDrainTimeout     = 2 * time.Second
+	defaultForceReapTimeout = 5 * time.Second
+	defaultReplayBytes      = 256 << 10
+	defaultClientQueueBytes = 1 << 20
+)
+
 // Info is a session's metadata.
 type Info = store.TerminalSession
 
@@ -109,37 +121,9 @@ type Manager struct {
 // NewManager validates cfg and marks sessions orphaned by a previous server
 // process as failed.
 func NewManager(ctx context.Context, cfg Config) (*Manager, error) {
-	if cfg.Store == nil || cfg.Starter == nil {
-		return nil, errors.New("session: store and starter are required")
-	}
-	if cfg.DefaultCommand.Path == "" {
-		cfg.DefaultCommand.Path = "/bin/sh"
-	}
-	if cfg.CommandPolicy == nil {
-		cfg.CommandPolicy = AllowAllCommands()
-	}
-	setDefault(&cfg.MaxSessions, 16)
-	setDefault(&cfg.MaxViewers, 8)
-	setDefault(&cfg.KillGrace, 5*time.Second)
-	setDefault(&cfg.DrainTimeout, 2*time.Second)
-	setDefault(&cfg.ForceReapTimeout, 5*time.Second)
-	setDefault(&cfg.ReplayBytes, 256<<10)
-	setDefault(&cfg.ClientQueueBytes, 1<<20)
-	if cfg.MaxSessions < 0 || cfg.MaxViewers < 0 || cfg.ReplayBytes < 0 || cfg.ClientQueueBytes < 0 || cfg.IdleTimeout < 0 {
-		return nil, errors.New("session: limits must not be negative")
-	}
-	if cfg.ClientQueueBytes < cfg.ReplayBytes {
-		return nil, fmt.Errorf("session: client queue (%d bytes) must hold the replay buffer (%d bytes)",
-			cfg.ClientQueueBytes, cfg.ReplayBytes)
-	}
-	if cfg.Logger == nil {
-		cfg.Logger = slog.Default()
-	}
-	if cfg.Now == nil {
-		cfg.Now = time.Now
-	}
-	if cfg.AfterFunc == nil {
-		cfg.AfterFunc = func(d time.Duration, f func()) Timer { return time.AfterFunc(d, f) }
+	cfg, err := withManagerDefaults(cfg)
+	if err != nil {
+		return nil, err
 	}
 	m := &Manager{cfg: cfg, live: map[string]*terminal{}, unpersisted: map[string]Info{}}
 	count, err := cfg.Store.FailInterruptedTerminalSessions(ctx, cfg.Now())
@@ -150,6 +134,54 @@ func NewManager(ctx context.Context, cfg Config) (*Manager, error) {
 		cfg.Logger.Warn("terminal sessions interrupted by restart marked failed", "count", count)
 	}
 	return m, nil
+}
+
+func withManagerDefaults(cfg Config) (Config, error) {
+	if cfg.Store == nil || cfg.Starter == nil {
+		return Config{}, errors.New("session: store and starter are required")
+	}
+	if cfg.DefaultCommand.Path == "" {
+		cfg.DefaultCommand.Path = defaultCommandPath
+	}
+	if cfg.CommandPolicy == nil {
+		cfg.CommandPolicy = AllowAllCommands()
+	}
+	setDefault(&cfg.MaxSessions, defaultMaxSessions)
+	setDefault(&cfg.MaxViewers, defaultMaxViewers)
+	setDefault(&cfg.KillGrace, defaultKillGrace)
+	setDefault(&cfg.DrainTimeout, defaultDrainTimeout)
+	setDefault(&cfg.ForceReapTimeout, defaultForceReapTimeout)
+	setDefault(&cfg.ReplayBytes, defaultReplayBytes)
+	setDefault(&cfg.ClientQueueBytes, defaultClientQueueBytes)
+	if err := checkLimits(cfg); err != nil {
+		return Config{}, err
+	}
+	setRuntimeDefaults(&cfg)
+	return cfg, nil
+}
+
+func checkLimits(cfg Config) error {
+	if cfg.MaxSessions < 0 || cfg.MaxViewers < 0 || cfg.ReplayBytes < 0 || cfg.ClientQueueBytes < 0 || cfg.IdleTimeout < 0 {
+		return errors.New("session: limits must not be negative")
+	}
+	if cfg.ClientQueueBytes < cfg.ReplayBytes {
+		return fmt.Errorf("session: client queue (%d bytes) must hold the replay buffer (%d bytes)",
+			cfg.ClientQueueBytes, cfg.ReplayBytes)
+	}
+	return nil
+}
+
+// setRuntimeDefaults fills the injectable logger, clock, and timer.
+func setRuntimeDefaults(cfg *Config) {
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	if cfg.AfterFunc == nil {
+		cfg.AfterFunc = func(d time.Duration, f func()) Timer { return time.AfterFunc(d, f) }
+	}
 }
 
 func setDefault[T int | time.Duration](v *T, fallback T) {
@@ -184,33 +216,50 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
+	if err := m.reserveStart(); err != nil {
+		return Info{}, err
+	}
+	info, err := m.createRecord(ctx, req, id, command, size)
+	if err != nil {
+		m.releaseStart()
+		return Info{}, err
+	}
+	return m.launch(req, info, command, size)
+}
 
+// reserveStart counts a session as starting, so the session limit and
+// Close account for it before its process exists.
+func (m *Manager) reserveStart() error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	switch {
 	case m.closed || m.live == nil:
-		m.mu.Unlock()
-		return Info{}, ErrClosed
+		return ErrClosed
 	case len(m.live)+m.starting >= m.cfg.MaxSessions:
-		m.mu.Unlock()
-		return Info{}, ErrSessionLimit
+		return ErrSessionLimit
 	}
 	m.starting++
 	m.wg.Add(1)
-	m.mu.Unlock()
-	release := func() {
-		m.mu.Lock()
-		m.starting--
-		m.mu.Unlock()
-		m.wg.Done()
-	}
+	return nil
+}
 
+// releaseStart undoes reserveStart for a session that never went live.
+func (m *Manager) releaseStart() {
+	m.mu.Lock()
+	m.starting--
+	m.mu.Unlock()
+	m.wg.Done()
+}
+
+// createRecord persists the starting session and audits its creation.
+// Only the argument count is audited, never the arguments themselves.
+func (m *Manager) createRecord(ctx context.Context, req CreateRequest, id string, command pty.Command, size pty.Size) (Info, error) {
 	now := m.cfg.Now()
 	info := Info{
 		PublicID: id, State: store.TerminalStarting, Command: command.Path, Args: command.Args,
 		Rows: int(size.Rows), Cols: int(size.Cols), CreatedAt: now, LastActivityAt: now,
 	}
 	if err := m.cfg.Store.CreateTerminalSession(ctx, info); err != nil {
-		release()
 		return Info{}, err
 	}
 	m.audit("terminal.session.created", req.RemoteAddr, map[string]string{
@@ -218,40 +267,52 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Info, error) {
 		"rows": strconv.Itoa(info.Rows), "cols": strconv.Itoa(info.Cols),
 	})
 	m.cfg.Logger.Info("terminal session created", "sessionId", id, "command", command.Path, "argCount", len(command.Args))
+	return info, nil
+}
 
+// launch starts the process and moves the reserved session into live.
+func (m *Manager) launch(req CreateRequest, info Info, command pty.Command, size pty.Size) (Info, error) {
 	var rec Recorder
 	if m.cfg.Recorders != nil && !req.NoRecording {
 		rec = m.cfg.Recorders.Begin(info)
 	}
 	proc, err := m.cfg.Starter.Start(command, size)
 	if err != nil {
-		info.State = store.TerminalFailed
-		info.EndedAt = m.cfg.Now()
-		info.Failure = "start failed: " + err.Error()
-		if rec != nil {
-			rec.End(Lifecycle{State: store.TerminalFailed, Reason: "start_failed"})
-		}
-		m.persist(info)
-		m.audit("terminal.session.failed", req.RemoteAddr, map[string]string{"sessionId": id, "reason": "start_failed"})
-		m.cfg.Logger.Warn("terminal session failed to start", "sessionId", id, "command", command.Path, "error", err)
-		release()
+		m.failStart(req, info, rec, err)
+		m.releaseStart()
 		return Info{}, fmt.Errorf("%w: %v", ErrProcessFailed, err)
 	}
-
 	info.State = store.TerminalRunning
 	info.StartedAt = m.cfg.Now()
 	m.persist(info)
-	m.audit("terminal.session.started", req.RemoteAddr, map[string]string{"sessionId": id, "pid": strconv.Itoa(proc.Pid())})
-	m.cfg.Logger.Info("terminal session started", "sessionId", id, "pid", proc.Pid())
-
+	m.audit("terminal.session.started", req.RemoteAddr, map[string]string{"sessionId": info.PublicID, "pid": strconv.Itoa(proc.Pid())})
+	m.cfg.Logger.Info("terminal session started", "sessionId", info.PublicID, "pid", proc.Pid())
 	if rec != nil {
 		rec.Lifecycle(Lifecycle{State: store.TerminalRunning})
 	}
 	t := newTerminal(m, info, proc)
 	t.rec = rec
+	return m.goLive(t), nil
+}
+
+func (m *Manager) failStart(req CreateRequest, info Info, rec Recorder, cause error) {
+	info.State = store.TerminalFailed
+	info.EndedAt = m.cfg.Now()
+	info.Failure = "start failed: " + cause.Error()
+	if rec != nil {
+		rec.End(Lifecycle{State: store.TerminalFailed, Reason: "start_failed"})
+	}
+	m.persist(info)
+	m.audit("terminal.session.failed", req.RemoteAddr, map[string]string{"sessionId": info.PublicID, "reason": "start_failed"})
+	m.cfg.Logger.Warn("terminal session failed to start", "sessionId", info.PublicID, "command", info.Command, "error", cause)
+}
+
+// goLive publishes t and starts it. A Close that began while t was
+// starting is applied to it at once.
+func (m *Manager) goLive(t *terminal) Info {
 	m.mu.Lock()
 	m.starting--
-	m.live[id] = t
+	m.live[t.info.PublicID] = t
 	closed, forced := m.closed, m.forced
 	m.mu.Unlock()
 	t.start()
@@ -261,7 +322,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Info, error) {
 	case closed:
 		t.terminate("shutdown", "")
 	}
-	return t.snapshot(), nil
+	return t.snapshot()
 }
 
 func (m *Manager) normalize(req CreateRequest) (pty.Command, pty.Size, error) {
@@ -417,32 +478,37 @@ func (m *Manager) Close(ctx context.Context) error {
 	}
 	// Bounded by persistTimeout, so a wedged store cannot hold up shutdown.
 	defer m.retryUnpersisted(context.Background())
-	m.mu.Lock()
-	m.closed = true
-	terminals := m.liveLocked()
-	m.mu.Unlock()
-	for _, t := range terminals {
+	for _, t := range m.markClosed(false) {
 		t.terminate("shutdown", "")
 	}
-	done := make(chan struct{})
-	go func() {
-		m.wg.Wait()
-		close(done)
-	}()
+	done := goWait(&m.wg)
 	select {
 	case <-done:
 		return nil
 	case <-ctx.Done():
 	}
-
-	m.mu.Lock()
-	m.forced = true
-	terminals = m.liveLocked()
-	m.mu.Unlock()
+	terminals := m.markClosed(true)
 	m.cfg.Logger.Warn("terminal shutdown deadline passed; killing remaining sessions", "sessions", len(terminals))
 	for _, t := range terminals {
 		t.forceKill()
 	}
+	return m.awaitReap(ctx, done)
+}
+
+// markClosed sets closed, or forced as well, and returns the live sessions
+// at that moment; sessions that start later see the flag in goLive.
+func (m *Manager) markClosed(forced bool) []*terminal {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closed = true
+	if forced {
+		m.forced = true
+	}
+	return m.liveLocked()
+}
+
+// awaitReap waits up to ForceReapTimeout for SIGKILLed sessions to be reaped.
+func (m *Manager) awaitReap(ctx context.Context, done <-chan struct{}) error {
 	reap := time.NewTimer(m.cfg.ForceReapTimeout)
 	defer reap.Stop()
 	select {
@@ -454,6 +520,16 @@ func (m *Manager) Close(ctx context.Context) error {
 		m.mu.Unlock()
 		return fmt.Errorf("session: %d sessions not reaped after SIGKILL: %w", remaining, ctx.Err())
 	}
+}
+
+// goWait returns a channel closed once wg's counter reaches zero.
+func goWait(wg *sync.WaitGroup) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	return done
 }
 
 func (m *Manager) liveLocked() []*terminal {
@@ -521,35 +597,14 @@ func (m *Manager) pendingFinal(id string) (Info, bool) {
 // its context; a retry left running keeps its entries in memory, and later
 // calls skip retrying until it returns.
 func (m *Manager) retryUnpersisted(ctx context.Context) {
-	m.mu.Lock()
-	if m.retrying || len(m.unpersisted) == 0 {
-		m.mu.Unlock()
+	pending := m.claimUnpersisted()
+	if pending == nil {
 		return
 	}
-	m.retrying = true
-	pending := make([]Info, 0, len(m.unpersisted))
-	for _, info := range m.unpersisted {
-		pending = append(pending, info)
-	}
-	m.mu.Unlock()
-
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		storeCtx, cancel := context.WithTimeout(context.Background(), persistTimeout)
-		defer cancel()
-		for _, info := range pending {
-			if err := m.cfg.Store.UpdateTerminalSession(storeCtx, info); err != nil {
-				continue
-			}
-			m.cfg.Logger.Info("persisted terminal session final state after retry", "sessionId", info.PublicID)
-			m.mu.Lock()
-			delete(m.unpersisted, info.PublicID)
-			m.mu.Unlock()
-		}
-		m.mu.Lock()
-		m.retrying = false
-		m.mu.Unlock()
+		m.persistPending(pending)
 	}()
 	expired := make(chan struct{})
 	bound := m.cfg.AfterFunc(persistTimeout, func() { close(expired) })
@@ -560,6 +615,41 @@ func (m *Manager) retryUnpersisted(ctx context.Context) {
 		m.cfg.Logger.Warn("terminal session final state retry is still blocked; keeping it in memory", "sessions", len(pending))
 	case <-ctx.Done():
 	}
+}
+
+// claimUnpersisted marks a retry in flight and returns what it should
+// store, or nil when there is nothing to do or another retry owns it.
+func (m *Manager) claimUnpersisted() []Info {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.retrying || len(m.unpersisted) == 0 {
+		return nil
+	}
+	m.retrying = true
+	pending := make([]Info, 0, len(m.unpersisted))
+	for _, info := range m.unpersisted {
+		pending = append(pending, info)
+	}
+	return pending
+}
+
+// persistPending stores each pending state, forgetting those that succeed,
+// then releases the retry claim.
+func (m *Manager) persistPending(pending []Info) {
+	storeCtx, cancel := context.WithTimeout(context.Background(), persistTimeout)
+	defer cancel()
+	for _, info := range pending {
+		if err := m.cfg.Store.UpdateTerminalSession(storeCtx, info); err != nil {
+			continue
+		}
+		m.cfg.Logger.Info("persisted terminal session final state after retry", "sessionId", info.PublicID)
+		m.mu.Lock()
+		delete(m.unpersisted, info.PublicID)
+		m.mu.Unlock()
+	}
+	m.mu.Lock()
+	m.retrying = false
+	m.mu.Unlock()
 }
 
 func (m *Manager) persist(info Info) bool {
@@ -585,8 +675,11 @@ func (m *Manager) audit(eventType, remoteAddr string, details map[string]string)
 	}
 }
 
+// idBytes gives session IDs 144 bits of randomness (24 base64url characters).
+const idBytes = 18
+
 func newID() (string, error) {
-	b := make([]byte, 18)
+	b := make([]byte, idBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("session id: %w", err)
 	}

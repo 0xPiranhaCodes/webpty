@@ -115,40 +115,45 @@ func (s *Subscription) LastSeq() uint64 { return s.lastSeq }
 // ErrSubscriptionClosed after Close.
 func (s *Subscription) Next(ctx context.Context) (Event, error) {
 	for {
-		s.mu.Lock()
-		if s.err != nil {
-			err := s.err
-			s.mu.Unlock()
-			return Event{}, err
+		if event, ready, err := s.take(); ready {
+			return event, err
 		}
-		if s.head < len(s.queue) {
-			event := s.queue[s.head]
-			s.queue[s.head] = Event{}
-			s.head++
-			s.bytes -= eventCost(event)
-			if s.head == len(s.queue) {
-				s.queue, s.head = s.queue[:0], 0
-			}
-			s.mu.Unlock()
-			return event, nil
-		}
-		if s.exit != nil {
-			sent := s.exitSent
-			s.exitSent = true
-			exit := *s.exit
-			s.mu.Unlock()
-			if sent {
-				return Event{}, io.EOF
-			}
-			return Event{Kind: EventExit, Exit: exit}, nil
-		}
-		s.mu.Unlock()
 		select {
 		case <-s.notify:
 		case <-ctx.Done():
 			return Event{}, ctx.Err()
 		}
 	}
+}
+
+// take returns the next result if one is ready: the subscription's error,
+// a queued event, the exit event once, then io.EOF.
+func (s *Subscription) take() (event Event, ready bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.err != nil:
+		return Event{}, true, s.err
+	case s.head < len(s.queue):
+		return s.dequeueLocked(), true, nil
+	case s.exit == nil:
+		return Event{}, false, nil
+	case s.exitSent:
+		return Event{}, true, io.EOF
+	}
+	s.exitSent = true
+	return Event{Kind: EventExit, Exit: *s.exit}, true, nil
+}
+
+func (s *Subscription) dequeueLocked() Event {
+	event := s.queue[s.head]
+	s.queue[s.head] = Event{} // drop the reference so the output can be collected
+	s.head++
+	s.bytes -= eventCost(event)
+	if s.head == len(s.queue) {
+		s.queue, s.head = s.queue[:0], 0
+	}
+	return event
 }
 
 // Close detaches the viewer. The session keeps running. It is idempotent.
