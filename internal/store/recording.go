@@ -161,28 +161,42 @@ func (t *Tx) CreateFailedRecording(ctx context.Context, rec Recording) error {
 // one transaction. c must directly follow the previous chunk.
 func (s *Store) AppendRecordingChunk(ctx context.Context, publicID string, c RecordingChunk, now time.Time) error {
 	return s.WithTx(ctx, func(tx *Tx) error {
-		var id int64
-		err := tx.tx.QueryRowContext(ctx, `UPDATE recordings SET chunk_count = chunk_count + 1,
-				event_count = event_count + ?, compressed_bytes = compressed_bytes + ?,
-				uncompressed_bytes = uncompressed_bytes + ?, duration_ms = ?, updated_at = ?
-			WHERE public_id = ? AND status = 'recording' AND chunk_count = ? AND event_count + 1 = ? AND duration_ms <= ?
-			RETURNING id`,
-			c.EventCount, len(c.Data), c.UncompressedBytes, c.LastOffsetMS, toDB(now),
-			publicID, c.Index, c.FirstSeq, c.FirstOffsetMS).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			return tx.appendRejected(ctx, publicID)
-		}
+		id, err := tx.advanceRecording(ctx, publicID, c, now)
 		if err != nil {
-			return fmt.Errorf("append recording chunk: %w", err)
+			return err
 		}
-		if _, err := tx.tx.ExecContext(ctx, `INSERT INTO recording_chunks (recording_id, `+chunkMetaColumns+`, data)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, c.Index, c.FirstSeq, c.LastSeq, c.FirstOffsetMS, c.LastOffsetMS, c.EventCount,
-			c.UncompressedBytes, c.Checksum, c.Codec, c.Data); err != nil {
-			return fmt.Errorf("append recording chunk: %w", err)
-		}
-		return nil
+		return tx.insertChunk(ctx, id, c)
 	})
+}
+
+// advanceRecording bumps the counters for c, and returns the recording's row
+// ID. It matches only when c directly follows the previous chunk.
+func (t *Tx) advanceRecording(ctx context.Context, publicID string, c RecordingChunk, now time.Time) (int64, error) {
+	var id int64
+	err := t.tx.QueryRowContext(ctx, `UPDATE recordings SET chunk_count = chunk_count + 1,
+			event_count = event_count + ?, compressed_bytes = compressed_bytes + ?,
+			uncompressed_bytes = uncompressed_bytes + ?, duration_ms = ?, updated_at = ?
+		WHERE public_id = ? AND status = 'recording' AND chunk_count = ? AND event_count + 1 = ? AND duration_ms <= ?
+		RETURNING id`,
+		c.EventCount, len(c.Data), c.UncompressedBytes, c.LastOffsetMS, toDB(now),
+		publicID, c.Index, c.FirstSeq, c.FirstOffsetMS).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, t.appendRejected(ctx, publicID)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("append recording chunk: %w", err)
+	}
+	return id, nil
+}
+
+func (t *Tx) insertChunk(ctx context.Context, recordingID int64, c RecordingChunk) error {
+	if _, err := t.tx.ExecContext(ctx, `INSERT INTO recording_chunks (recording_id, `+chunkMetaColumns+`, data)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		recordingID, c.Index, c.FirstSeq, c.LastSeq, c.FirstOffsetMS, c.LastOffsetMS, c.EventCount,
+		c.UncompressedBytes, c.Checksum, c.Codec, c.Data); err != nil {
+		return fmt.Errorf("append recording chunk: %w", err)
+	}
+	return nil
 }
 
 func (t *Tx) appendRejected(ctx context.Context, publicID string) error {
@@ -255,18 +269,26 @@ func (t *Tx) DeleteRecording(ctx context.Context, publicID string, now time.Time
 	case RecordingActive:
 		return rec, false, ErrRecordingActive
 	}
-	var id int64
-	err = t.tx.QueryRowContext(ctx, `UPDATE recordings SET status = 'deleted', deleted_at = ?, updated_at = ?
-		WHERE public_id = ? AND status IN ('complete', 'incomplete') RETURNING id`,
-		toDB(now), toDB(now), publicID).Scan(&id)
-	if err != nil {
-		return Recording{}, false, fmt.Errorf("delete recording: %w", err)
-	}
-	if _, err := t.tx.ExecContext(ctx, `DELETE FROM recording_chunks WHERE recording_id = ?`, id); err != nil {
-		return Recording{}, false, fmt.Errorf("delete recording chunks: %w", err)
+	if err := t.tombstoneRecording(ctx, publicID, now); err != nil {
+		return Recording{}, false, err
 	}
 	rec, err = t.Recording(ctx, publicID)
 	return rec, err == nil, err
+}
+
+// tombstoneRecording marks an ended recording deleted and drops its chunks.
+func (t *Tx) tombstoneRecording(ctx context.Context, publicID string, now time.Time) error {
+	var id int64
+	err := t.tx.QueryRowContext(ctx, `UPDATE recordings SET status = 'deleted', deleted_at = ?, updated_at = ?
+		WHERE public_id = ? AND status IN ('complete', 'incomplete') RETURNING id`,
+		toDB(now), toDB(now), publicID).Scan(&id)
+	if err != nil {
+		return fmt.Errorf("delete recording: %w", err)
+	}
+	if _, err := t.tx.ExecContext(ctx, `DELETE FROM recording_chunks WHERE recording_id = ?`, id); err != nil {
+		return fmt.Errorf("delete recording chunks: %w", err)
+	}
+	return nil
 }
 
 // ExpiredRecordings returns up to limit ended recordings whose retention
@@ -325,24 +347,9 @@ func recordingBy(ctx context.Context, q queryer, publicID string) (Recording, er
 // Recordings lists recordings newest first, tombstones included. It returns
 // ErrNotFound if filter.Before names no recording.
 func (s *Store) Recordings(ctx context.Context, filter RecordingFilter) ([]Recording, error) {
-	where, args := []string{}, []any{}
-	if filter.TerminalID != "" {
-		where, args = append(where, `r.terminal_public_id = ?`), append(args, filter.TerminalID)
-	}
-	if filter.Before != "" {
-		var startedAt, id int64
-		err := s.db.QueryRowContext(ctx, `SELECT started_at, id FROM recordings WHERE public_id = ?`, filter.Before).Scan(&startedAt, &id)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		if err != nil {
-			return nil, fmt.Errorf("list recordings: %w", err)
-		}
-		where, args = append(where, `(r.started_at, r.id) < (?, ?)`), append(args, startedAt, id)
-	}
-	query := `SELECT ` + recordingColumns + recordingFrom
-	if len(where) > 0 {
-		query += ` WHERE ` + strings.Join(where, ` AND `)
+	query, args, err := s.recordingsQuery(ctx, filter)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, query+` ORDER BY r.started_at DESC, r.id DESC LIMIT ?`, append(args, filter.Limit)...)
 	if err != nil {
@@ -360,10 +367,42 @@ func (s *Store) Recordings(ctx context.Context, filter RecordingFilter) ([]Recor
 	return recs, rows.Err()
 }
 
+// recordingsQuery builds the filtered SELECT, without ordering or limit.
+func (s *Store) recordingsQuery(ctx context.Context, filter RecordingFilter) (string, []any, error) {
+	where, args := []string{}, []any{}
+	if filter.TerminalID != "" {
+		where, args = append(where, `r.terminal_public_id = ?`), append(args, filter.TerminalID)
+	}
+	if filter.Before != "" {
+		startedAt, id, err := s.recordingPosition(ctx, filter.Before)
+		if err != nil {
+			return "", nil, err
+		}
+		where, args = append(where, `(r.started_at, r.id) < (?, ?)`), append(args, startedAt, id)
+	}
+	query := `SELECT ` + recordingColumns + recordingFrom
+	if len(where) > 0 {
+		query += ` WHERE ` + strings.Join(where, ` AND `)
+	}
+	return query, args, nil
+}
+
+// recordingPosition returns the sort key a Before cursor continues from.
+func (s *Store) recordingPosition(ctx context.Context, publicID string) (startedAt, id int64, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT started_at, id FROM recordings WHERE public_id = ?`, publicID).Scan(&startedAt, &id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("list recordings: %w", err)
+	}
+	return startedAt, id, nil
+}
+
 // RecordingChunks reads, in one snapshot, the recording and a run of its
 // chunks selected by q. The read-only transaction is deferred, so it neither
 // takes nor waits for the write lock.
-func (s *Store) RecordingChunks(ctx context.Context, publicID string, q ChunkQuery) (page RecordingChunkPage, err error) {
+func (s *Store) RecordingChunks(ctx context.Context, publicID string, q ChunkQuery) (RecordingChunkPage, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return RecordingChunkPage{}, fmt.Errorf("begin read: %w", err)
@@ -371,7 +410,7 @@ func (s *Store) RecordingChunks(ctx context.Context, publicID string, q ChunkQue
 	defer func() { _ = tx.Rollback() }()
 
 	var id int64
-	page.Recording, err = scanRecordingWith(tx.QueryRowContext(ctx,
+	rec, err := scanRecordingWith(tx.QueryRowContext(ctx,
 		`SELECT r.id, `+recordingColumns+recordingFrom+` WHERE r.public_id = ?`, publicID), &id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RecordingChunkPage{}, ErrNotFound
@@ -379,44 +418,84 @@ func (s *Store) RecordingChunks(ctx context.Context, publicID string, q ChunkQue
 	if err != nil {
 		return RecordingChunkPage{}, err
 	}
-	var start sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT MIN(chunk_index) FROM recording_chunks
-		WHERE recording_id = ? AND last_seq > ? AND last_offset_ms >= ?`, id, q.AfterSeq, q.AfterMS).Scan(&start); err != nil {
-		return RecordingChunkPage{}, fmt.Errorf("seek recording: %w", err)
+	return readChunkPage(ctx, tx, RecordingChunkPage{Recording: rec}, id, q)
+}
+
+// readChunkPage fills page with the chunks q selects from recording id.
+func readChunkPage(ctx context.Context, tx *sql.Tx, page RecordingChunkPage, id int64, q ChunkQuery) (RecordingChunkPage, error) {
+	start, found, err := firstChunkIndex(ctx, tx, id, q)
+	if err != nil {
+		return RecordingChunkPage{}, err
 	}
-	if !start.Valid {
+	if !found {
 		return page, nil
 	}
-	if start.Int64 > 0 {
-		var prev RecordingChunk
-		err := scanChunk(tx.QueryRowContext(ctx, `SELECT `+chunkMetaColumns+` FROM recording_chunks
-			WHERE recording_id = ? AND chunk_index = ?`, id, start.Int64-1), &prev)
-		switch {
-		case err == nil:
-			page.Previous = &prev
-		case !errors.Is(err, sql.ErrNoRows):
-			return RecordingChunkPage{}, err
-		}
+	if page.Previous, err = previousChunk(ctx, tx, id, start); err != nil {
+		return RecordingChunkPage{}, err
 	}
-	end, more, err := chunkPageEnd(ctx, tx, id, start.Int64, q)
+	end, more, err := chunkPageEnd(ctx, tx, id, start, q)
 	if err != nil {
 		return RecordingChunkPage{}, err
 	}
 	page.More = more
+	if page.Chunks, err = readChunks(ctx, tx, id, start, end); err != nil {
+		return RecordingChunkPage{}, err
+	}
+	return page, nil
+}
+
+// firstChunkIndex finds the first chunk holding an event the query selects.
+func firstChunkIndex(ctx context.Context, tx *sql.Tx, id int64, q ChunkQuery) (start int64, found bool, err error) {
+	var first sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MIN(chunk_index) FROM recording_chunks
+		WHERE recording_id = ? AND last_seq > ? AND last_offset_ms >= ?`, id, q.AfterSeq, q.AfterMS).Scan(&first); err != nil {
+		return 0, false, fmt.Errorf("seek recording: %w", err)
+	}
+	return first.Int64, first.Valid, nil
+}
+
+// previousChunk returns the metadata of the chunk before start, or nil if
+// start is the first.
+func previousChunk(ctx context.Context, tx *sql.Tx, id, start int64) (*RecordingChunk, error) {
+	if start == 0 {
+		return nil, nil
+	}
+	var prev RecordingChunk
+	err := scanChunk(tx.QueryRowContext(ctx, `SELECT `+chunkMetaColumns+` FROM recording_chunks
+		WHERE recording_id = ? AND chunk_index = ?`, id, start-1), &prev)
+	switch {
+	case err == nil:
+		return &prev, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, nil
+	default:
+		return nil, err
+	}
+}
+
+// readChunks reads chunks start..end with their data.
+func readChunks(ctx context.Context, tx *sql.Tx, id, start, end int64) ([]RecordingChunk, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT `+chunkMetaColumns+`, data FROM recording_chunks
-		WHERE recording_id = ? AND chunk_index >= ? AND chunk_index <= ? ORDER BY chunk_index`, id, start.Int64, end)
+		WHERE recording_id = ? AND chunk_index >= ? AND chunk_index <= ? ORDER BY chunk_index`, id, start, end)
 	if err != nil {
-		return RecordingChunkPage{}, fmt.Errorf("read recording chunks: %w", err)
+		return nil, fmt.Errorf("read recording chunks: %w", err)
 	}
 	defer rows.Close()
+	var chunks []RecordingChunk
 	for rows.Next() {
 		var c RecordingChunk
 		if err := scanChunk(rows, &c, &c.Data); err != nil {
-			return RecordingChunkPage{}, err
+			return nil, err
 		}
-		page.Chunks = append(page.Chunks, c)
+		chunks = append(chunks, c)
 	}
-	return page, rows.Err()
+	return chunks, rows.Err()
+}
+
+// satisfied reports whether chunks and events already meet a bound; zero
+// bounds are unlimited.
+func (q ChunkQuery) satisfied(chunks, events int64) bool {
+	return (q.MaxChunks > 0 && chunks >= int64(q.MaxChunks)) || (q.MaxEvents > 0 && events >= int64(q.MaxEvents))
 }
 
 // chunkPageEnd finds, from chunk metadata alone, the last chunk index of the
@@ -431,7 +510,7 @@ func chunkPageEnd(ctx context.Context, tx *sql.Tx, id, start int64, q ChunkQuery
 	end = start - 1
 	var chunks, events int64
 	for rows.Next() {
-		if (q.MaxChunks > 0 && chunks >= int64(q.MaxChunks)) || (q.MaxEvents > 0 && events >= int64(q.MaxEvents)) {
+		if q.satisfied(chunks, events) {
 			return end, true, nil
 		}
 		var count int64
@@ -471,30 +550,40 @@ func scanChunk(row rowScanner, c *RecordingChunk, extra ...any) error {
 
 func scanRecording(row rowScanner) (Recording, error) { return scanRecordingWith(row) }
 
+// recordingRow holds a recordings row's raw column values.
+type recordingRow struct {
+	rec                             Recording
+	status                          string
+	startedAt, updatedAt            int64
+	endedAt, retainUntil, deletedAt sql.NullInt64
+}
+
+// dest lists the scan targets in recordingColumns order, after leading.
+func (r *recordingRow) dest(leading []any) []any {
+	rec := &r.rec
+	return append(leading, &rec.PublicID, &rec.TerminalID, &r.status, &rec.FormatVersion, &rec.Codec, &r.startedAt,
+		&r.endedAt, &rec.DurationMS, &rec.Rows, &rec.Cols, &rec.EventCount, &rec.ChunkCount, &rec.CompressedBytes,
+		&rec.UncompressedBytes, &rec.FailureCode, &r.retainUntil, &r.deletedAt, &r.updatedAt)
+}
+
+func (r *recordingRow) recording() Recording {
+	rec := r.rec
+	rec.Status = RecordingStatus(r.status)
+	rec.StartedAt = fromDB(r.startedAt)
+	rec.UpdatedAt = fromDB(r.updatedAt)
+	rec.EndedAt = fromNullDB(r.endedAt)
+	rec.RetainUntil = fromNullDB(r.retainUntil)
+	rec.DeletedAt = fromNullDB(r.deletedAt)
+	return rec
+}
+
 func scanRecordingWith(row rowScanner, leading ...any) (Recording, error) {
-	var rec Recording
-	var status string
-	var startedAt, updatedAt int64
-	var endedAt, retainUntil, deletedAt sql.NullInt64
-	dest := append(leading, &rec.PublicID, &rec.TerminalID, &status, &rec.FormatVersion, &rec.Codec, &startedAt,
-		&endedAt, &rec.DurationMS, &rec.Rows, &rec.Cols, &rec.EventCount, &rec.ChunkCount, &rec.CompressedBytes,
-		&rec.UncompressedBytes, &rec.FailureCode, &retainUntil, &deletedAt, &updatedAt)
-	if err := row.Scan(dest...); err != nil {
+	var r recordingRow
+	if err := row.Scan(r.dest(leading)...); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Recording{}, err
 		}
 		return Recording{}, fmt.Errorf("scan recording: %w", err)
 	}
-	rec.Status = RecordingStatus(status)
-	rec.StartedAt = fromDB(startedAt)
-	rec.UpdatedAt = fromDB(updatedAt)
-	for _, v := range []struct {
-		src sql.NullInt64
-		dst *time.Time
-	}{{endedAt, &rec.EndedAt}, {retainUntil, &rec.RetainUntil}, {deletedAt, &rec.DeletedAt}} {
-		if v.src.Valid {
-			*v.dst = fromDB(v.src.Int64)
-		}
-	}
-	return rec, nil
+	return r.recording(), nil
 }

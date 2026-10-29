@@ -44,50 +44,83 @@ type BackupMetadata struct {
 // the file with mode 0600, records metadata in it, and checks its integrity
 // and schema before it appears at dst.
 func Backup(ctx context.Context, src, dst string, opts BackupOptions) (meta BackupMetadata, err error) {
-	if _, err := os.Lstat(dst); err == nil {
-		return BackupMetadata{}, fmt.Errorf("backup: %s: %w", dst, os.ErrExist)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return BackupMetadata{}, fmt.Errorf("backup: %w", err)
-	}
-	if info, err := os.Stat(src); err != nil {
-		return BackupMetadata{}, fmt.Errorf("backup: %w", err)
-	} else if !info.Mode().IsRegular() {
-		return BackupMetadata{}, fmt.Errorf("backup: %s is not a regular file", src)
+	if err := checkBackupPaths(src, dst); err != nil {
+		return BackupMetadata{}, err
 	}
 	source, err := openFile(src, "ro")
 	if err != nil {
 		return BackupMetadata{}, fmt.Errorf("backup: %w", err)
 	}
 	defer source.Close()
-	inspection, err := inspectDB(ctx, source)
+	version, err := sourceSchemaVersion(ctx, source, src)
 	if err != nil {
-		return BackupMetadata{}, fmt.Errorf("backup: %s: %w", src, err)
+		return BackupMetadata{}, err
 	}
-	if inspection.SchemaVersion == 0 {
-		return BackupMetadata{}, fmt.Errorf("backup: %s is not an initialized webpty database", src)
-	}
-
-	partial, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".partial-*")
+	tmp, err := createHiddenTemp(dst, ".partial-*")
 	if err != nil {
 		return BackupMetadata{}, fmt.Errorf("backup: %w", err)
 	}
-	tmp := partial.Name()
-	_ = partial.Close()
-	defer func() {
-		removeDatabaseFiles(tmp)
-	}()
+	defer removeDatabaseFiles(tmp)
+	if meta, err = writeSnapshot(ctx, source, tmp, opts, version); err != nil {
+		return BackupMetadata{}, err
+	}
+	if err := publishBackup(tmp, dst); err != nil {
+		return BackupMetadata{}, err
+	}
+	return meta, nil
+}
+
+// checkBackupPaths refuses an existing dst and a src that is not a regular file.
+func checkBackupPaths(src, dst string) error {
+	if _, err := os.Lstat(dst); err == nil {
+		return fmt.Errorf("backup: %s: %w", dst, os.ErrExist)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("backup: %w", err)
+	}
+	if info, err := os.Stat(src); err != nil {
+		return fmt.Errorf("backup: %w", err)
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("backup: %s is not a regular file", src)
+	}
+	return nil
+}
+
+func sourceSchemaVersion(ctx context.Context, source *sql.DB, src string) (int, error) {
+	inspection, err := inspectDB(ctx, source)
+	if err != nil {
+		return 0, fmt.Errorf("backup: %s: %w", src, err)
+	}
+	if inspection.SchemaVersion == 0 {
+		return 0, fmt.Errorf("backup: %s is not an initialized webpty database", src)
+	}
+	return inspection.SchemaVersion, nil
+}
+
+// createHiddenTemp creates an empty private file next to path and returns
+// its name; pattern is appended to the hidden base name.
+func createHiddenTemp(path, pattern string) (string, error) {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+pattern)
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	_ = f.Close()
+	return name, nil
+}
+
+// writeSnapshot copies source into tmp, stamps and verifies it, and fsyncs it.
+func writeSnapshot(ctx context.Context, source *sql.DB, tmp string, opts BackupOptions, version int) (BackupMetadata, error) {
 	// VACUUM INTO accepts an existing empty file, which keeps CreateTemp's
 	// private mode from the first byte written.
 	if _, err := source.ExecContext(ctx, `VACUUM INTO ?`, tmp); err != nil {
 		return BackupMetadata{}, fmt.Errorf("backup: snapshot: %w", err)
 	}
-
-	meta = BackupMetadata{
+	meta := BackupMetadata{
 		Format:        BackupFormat,
 		CreatedAt:     time.Now().UTC().Truncate(time.Second),
 		WebptyVersion: opts.Version,
 		WebptyCommit:  opts.Commit,
-		SchemaVersion: inspection.SchemaVersion,
+		SchemaVersion: version,
 	}
 	if err := finishBackup(ctx, tmp, meta); err != nil {
 		return BackupMetadata{}, fmt.Errorf("backup: %w", err)
@@ -95,21 +128,25 @@ func Backup(ctx context.Context, src, dst string, opts BackupOptions) (meta Back
 	if err := syncFile(tmp); err != nil {
 		return BackupMetadata{}, fmt.Errorf("backup: %w", err)
 	}
-	// Both a hard link and an O_EXCL copy (for filesystems without hard
-	// links) publish the file without replacing anything that appeared at
-	// dst in the meantime.
+	return meta, nil
+}
+
+// publishBackup puts tmp at dst. Both a hard link and an O_EXCL copy (for
+// filesystems without hard links) publish the file without replacing
+// anything that appeared at dst in the meantime.
+func publishBackup(tmp, dst string) error {
 	if err := linkFile(tmp, dst); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return BackupMetadata{}, fmt.Errorf("backup: %s: %w", dst, os.ErrExist)
+			return fmt.Errorf("backup: %s: %w", dst, os.ErrExist)
 		}
 		if err := copyExclusive(tmp, dst); err != nil {
-			return BackupMetadata{}, fmt.Errorf("backup: %w", err)
+			return fmt.Errorf("backup: %w", err)
 		}
 	}
 	if err := syncDir(filepath.Dir(dst)); err != nil {
-		return BackupMetadata{}, fmt.Errorf("backup: %w", err)
+		return fmt.Errorf("backup: %w", err)
 	}
-	return meta, nil
+	return nil
 }
 
 var linkFile = os.Link
@@ -170,12 +207,8 @@ func ReadBackupMetadata(ctx context.Context, path string) (BackupMetadata, error
 }
 
 func readBackupMetadata(ctx context.Context, db *sql.DB) (BackupMetadata, error) {
-	var present int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, backupTable).Scan(&present); err != nil {
-		return BackupMetadata{}, fmt.Errorf("read backup metadata: %w", err)
-	}
-	if present == 0 {
-		return BackupMetadata{}, ErrNoBackupMetadata
+	if err := requireBackupTable(ctx, db); err != nil {
+		return BackupMetadata{}, err
 	}
 	rows, err := db.QueryContext(ctx, `SELECT key, value FROM `+backupTable)
 	if err != nil {
@@ -188,19 +221,7 @@ func readBackupMetadata(ctx context.Context, db *sql.DB) (BackupMetadata, error)
 		if err := rows.Scan(&key, &value); err != nil {
 			return BackupMetadata{}, fmt.Errorf("read backup metadata: %w", err)
 		}
-		switch key {
-		case "format":
-			meta.Format = value
-		case "created_at":
-			meta.CreatedAt, err = time.Parse(time.RFC3339, value)
-		case "webpty_version":
-			meta.WebptyVersion = value
-		case "webpty_commit":
-			meta.WebptyCommit = value
-		case "schema_version":
-			meta.SchemaVersion, err = strconv.Atoi(value)
-		}
-		if err != nil {
+		if err := meta.set(key, value); err != nil {
 			return BackupMetadata{}, fmt.Errorf("read backup metadata: %s: %w", key, err)
 		}
 	}
@@ -211,6 +232,34 @@ func readBackupMetadata(ctx context.Context, db *sql.DB) (BackupMetadata, error)
 		return BackupMetadata{}, fmt.Errorf("read backup metadata: unsupported format %q", meta.Format)
 	}
 	return meta, nil
+}
+
+func requireBackupTable(ctx context.Context, db *sql.DB) error {
+	var present int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, backupTable).Scan(&present); err != nil {
+		return fmt.Errorf("read backup metadata: %w", err)
+	}
+	if present == 0 {
+		return ErrNoBackupMetadata
+	}
+	return nil
+}
+
+// set stores one metadata row; unknown keys are ignored for forward compatibility.
+func (m *BackupMetadata) set(key, value string) (err error) {
+	switch key {
+	case "format":
+		m.Format = value
+	case "created_at":
+		m.CreatedAt, err = time.Parse(time.RFC3339, value)
+	case "webpty_version":
+		m.WebptyVersion = value
+	case "webpty_commit":
+		m.WebptyCommit = value
+	case "schema_version":
+		m.SchemaVersion, err = strconv.Atoi(value)
+	}
+	return err
 }
 
 // RestoreResult describes a completed restore.
@@ -240,105 +289,153 @@ func Restore(ctx context.Context, input, target string) (result RestoreResult, e
 		return RestoreResult{}, fmt.Errorf("restore: %w", err)
 	}
 	defer func() { _ = release() }()
-
-	inputInfo, err := os.Stat(input)
+	targetExists, err := checkRestoreInput(input, target)
 	if err != nil {
-		return RestoreResult{}, fmt.Errorf("restore: %w", err)
+		return RestoreResult{}, err
 	}
-	if !inputInfo.Mode().IsRegular() {
-		return RestoreResult{}, fmt.Errorf("restore: %s is not a regular file", input)
-	}
-	targetInfo, err := os.Stat(target)
-	targetExists := err == nil
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return RestoreResult{}, fmt.Errorf("restore: %w", err)
-	}
-	if targetExists && os.SameFile(inputInfo, targetInfo) {
-		return RestoreResult{}, errors.New("restore: the input is the database being replaced")
-	}
-	if nonEmpty(input + "-wal") {
-		return RestoreResult{}, fmt.Errorf("restore: %s has an uncheckpointed write-ahead log; "+
-			"stop the server that uses it, or make a copy with webpty backup", input)
-	}
-
-	dir := filepath.Dir(target)
-	staging, err := os.CreateTemp(dir, "."+filepath.Base(target)+".restore-*")
+	stagingPath, metadata, version, err := stageRestore(ctx, input, target)
 	if err != nil {
-		return RestoreResult{}, fmt.Errorf("restore: %w", err)
+		return RestoreResult{}, err
 	}
-	stagingPath := staging.Name()
 	swapped := false
 	defer func() {
 		if !swapped {
 			removeDatabaseFiles(stagingPath)
 		}
 	}()
-	if err := copyInto(staging, input); err != nil {
-		return RestoreResult{}, fmt.Errorf("restore: %w", err)
-	}
-	metadata, version, err := prepareRestore(ctx, stagingPath)
+	rollback, err := keepRollback(target, targetExists)
 	if err != nil {
-		return RestoreResult{}, fmt.Errorf("restore: %s: %w", input, err)
+		return RestoreResult{}, err
+	}
+	if swapped, err = swapIn(ctx, stagingPath, target, rollback, version); err != nil {
+		return RestoreResult{}, err
+	}
+	return RestoreResult{Metadata: metadata, SchemaVersion: version, RollbackPath: rollback}, nil
+}
+
+// checkRestoreInput rejects an input that is not a regular file, is target
+// itself, or still has committed pages in its write-ahead log.
+func checkRestoreInput(input, target string) (targetExists bool, err error) {
+	inputInfo, err := os.Stat(input)
+	if err != nil {
+		return false, fmt.Errorf("restore: %w", err)
+	}
+	if !inputInfo.Mode().IsRegular() {
+		return false, fmt.Errorf("restore: %s is not a regular file", input)
+	}
+	targetInfo, err := os.Stat(target)
+	targetExists = err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("restore: %w", err)
+	}
+	if targetExists && os.SameFile(inputInfo, targetInfo) {
+		return false, errors.New("restore: the input is the database being replaced")
+	}
+	if nonEmpty(input + "-wal") {
+		return false, fmt.Errorf("restore: %s has an uncheckpointed write-ahead log; "+
+			"stop the server that uses it, or make a copy with webpty backup", input)
+	}
+	return targetExists, nil
+}
+
+// stageRestore copies input to a private file next to target and checks
+// it. On error the staging file is already removed.
+func stageRestore(ctx context.Context, input, target string) (path string, metadata *BackupMetadata, version int, err error) {
+	staging, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".restore-*")
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("restore: %w", err)
+	}
+	stagingPath := staging.Name()
+	defer func() {
+		if err != nil {
+			removeDatabaseFiles(stagingPath)
+		}
+	}()
+	if err := copyInto(staging, input); err != nil {
+		return "", nil, 0, fmt.Errorf("restore: %w", err)
+	}
+	if metadata, version, err = prepareRestore(ctx, stagingPath); err != nil {
+		return "", nil, 0, fmt.Errorf("restore: %s: %w", input, err)
 	}
 	if err := syncFile(stagingPath); err != nil {
-		return RestoreResult{}, fmt.Errorf("restore: %w", err)
+		return "", nil, 0, fmt.Errorf("restore: %w", err)
 	}
+	return stagingPath, metadata, version, nil
+}
 
-	rollback := ""
-	if targetExists {
-		rollback = target + ".pre-restore-" + time.Now().UTC().Format("20060102T150405.000000000Z")
-		if err := preserve(target, rollback); err != nil {
-			return RestoreResult{}, fmt.Errorf("restore: keep rollback copy: %w", err)
-		}
-		if nonEmpty(target + "-wal") {
-			if err := preserve(target+"-wal", rollback+"-wal"); err != nil {
-				removeDatabaseFiles(rollback)
-				return RestoreResult{}, fmt.Errorf("restore: keep rollback copy: %w", err)
-			}
-		}
-		if err := syncDir(dir); err != nil {
+// rollbackTimeFormat names rollback copies so they sort by restore time.
+const rollbackTimeFormat = "20060102T150405.000000000Z"
+
+// keepRollback links the current database, and its write-ahead log, to a
+// timestamped rollback path. It returns "" when there is no database yet.
+func keepRollback(target string, targetExists bool) (string, error) {
+	if !targetExists {
+		return "", nil
+	}
+	rollback := target + ".pre-restore-" + time.Now().UTC().Format(rollbackTimeFormat)
+	if err := preserve(target, rollback); err != nil {
+		return "", fmt.Errorf("restore: keep rollback copy: %w", err)
+	}
+	if nonEmpty(target + "-wal") {
+		if err := preserve(target+"-wal", rollback+"-wal"); err != nil {
 			removeDatabaseFiles(rollback)
-			return RestoreResult{}, fmt.Errorf("restore: %w", err)
+			return "", fmt.Errorf("restore: keep rollback copy: %w", err)
 		}
 	}
-	putBack := func(cause error) error {
-		if rollback == "" {
-			removeDatabaseFiles(target)
-			return fmt.Errorf("restore: %w", cause)
-		}
-		if err := reinstate(rollback, target); err != nil {
-			return fmt.Errorf("restore: %w; putting the original back also failed (%v): it is kept at %s", cause, err, rollback)
-		}
-		return fmt.Errorf("restore: %w; the original database was put back and is also kept at %s", cause, rollback)
+	if err := syncDir(filepath.Dir(target)); err != nil {
+		removeDatabaseFiles(rollback)
+		return "", fmt.Errorf("restore: %w", err)
 	}
+	return rollback, nil
+}
 
+// swapIn renames the staged database over target and verifies it, putting
+// the original back on any failure. swapped reports whether the staging
+// file was consumed by the rename.
+func swapIn(ctx context.Context, stagingPath, target, rollback string, version int) (swapped bool, err error) {
 	// The old write-ahead log and shared memory belong to the replaced
 	// database; SQLite would replay them into the restored one.
 	for _, suffix := range []string{"-wal", "-shm"} {
 		if err := os.Remove(target + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return RestoreResult{}, putBack(err)
+			return false, putBack(rollback, target, err)
 		}
 	}
 	if err := os.Rename(stagingPath, target); err != nil {
-		return RestoreResult{}, putBack(err)
+		return false, putBack(rollback, target, err)
 	}
-	swapped = true
-	if err := syncDir(dir); err != nil {
-		return RestoreResult{}, putBack(err)
+	if err := syncDir(filepath.Dir(target)); err != nil {
+		return true, putBack(rollback, target, err)
 	}
+	if err := verifyRestored(ctx, target, version); err != nil {
+		return true, putBack(rollback, target, err)
+	}
+	return true, nil
+}
+
+func verifyRestored(ctx context.Context, target string, version int) error {
 	if afterRestoreSwap != nil {
 		if err := afterRestoreSwap(target); err != nil {
-			return RestoreResult{}, putBack(err)
+			return err
 		}
 	}
 	inspection, err := Inspect(ctx, target)
 	if err == nil && inspection.SchemaVersion != version {
 		err = fmt.Errorf("restored database has schema version %d, want %d", inspection.SchemaVersion, version)
 	}
-	if err != nil {
-		return RestoreResult{}, putBack(err)
+	return err
+}
+
+// putBack restores the rollback copy after a failed swap and explains
+// where the original database is.
+func putBack(rollback, target string, cause error) error {
+	if rollback == "" {
+		removeDatabaseFiles(target)
+		return fmt.Errorf("restore: %w", cause)
 	}
-	return RestoreResult{Metadata: metadata, SchemaVersion: version, RollbackPath: rollback}, nil
+	if err := reinstate(rollback, target); err != nil {
+		return fmt.Errorf("restore: %w; putting the original back also failed (%v): it is kept at %s", cause, err, rollback)
+	}
+	return fmt.Errorf("restore: %w; the original database was put back and is also kept at %s", cause, rollback)
 }
 
 // prepareRestore checks a staged copy and removes its backup metadata.
@@ -397,15 +494,7 @@ func preserve(src, dst string) error {
 	} else if errors.Is(err, os.ErrExist) {
 		return err
 	}
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if err := copyInto(out, src); err != nil {
-		_ = os.Remove(dst)
-		return err
-	}
-	return nil
+	return copyExclusive(src, dst)
 }
 
 // reinstate atomically puts the rollback copy, and its write-ahead log if

@@ -121,33 +121,40 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+// terminalRow holds a terminal_sessions row's raw column values.
+type terminalRow struct {
+	session                      TerminalSession
+	state, args                  string
+	createdAt, lastActivityAt    int64
+	startedAt, endedAt, exitCode sql.NullInt64
+}
+
 func scanTerminalSession(row rowScanner) (TerminalSession, error) {
-	var session TerminalSession
-	var state, args string
-	var createdAt, lastActivityAt int64
-	var startedAt, endedAt, exitCode sql.NullInt64
-	err := row.Scan(&session.PublicID, &session.Title, &state, &session.Command, &args, &session.Rows, &session.Cols,
-		&createdAt, &startedAt, &endedAt, &lastActivityAt, &exitCode, &session.ExitSignal, &session.Failure)
+	var r terminalRow
+	s := &r.session
+	err := row.Scan(&s.PublicID, &s.Title, &r.state, &s.Command, &r.args, &s.Rows, &s.Cols,
+		&r.createdAt, &r.startedAt, &r.endedAt, &r.lastActivityAt, &r.exitCode, &s.ExitSignal, &s.Failure)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return TerminalSession{}, err
 		}
 		return TerminalSession{}, fmt.Errorf("scan terminal session: %w", err)
 	}
-	if err := json.Unmarshal([]byte(args), &session.Args); err != nil {
+	return r.terminalSession()
+}
+
+func (r *terminalRow) terminalSession() (TerminalSession, error) {
+	session := r.session
+	if err := json.Unmarshal([]byte(r.args), &session.Args); err != nil {
 		return TerminalSession{}, fmt.Errorf("decode terminal args: %w", err)
 	}
-	session.State = TerminalState(state)
-	session.CreatedAt = fromDB(createdAt)
-	session.LastActivityAt = fromDB(lastActivityAt)
-	if startedAt.Valid {
-		session.StartedAt = fromDB(startedAt.Int64)
-	}
-	if endedAt.Valid {
-		session.EndedAt = fromDB(endedAt.Int64)
-	}
-	if exitCode.Valid {
-		code := int(exitCode.Int64)
+	session.State = TerminalState(r.state)
+	session.CreatedAt = fromDB(r.createdAt)
+	session.LastActivityAt = fromDB(r.lastActivityAt)
+	session.StartedAt = fromNullDB(r.startedAt)
+	session.EndedAt = fromNullDB(r.endedAt)
+	if r.exitCode.Valid {
+		code := int(r.exitCode.Int64)
 		session.ExitCode = &code
 	}
 	return session, nil

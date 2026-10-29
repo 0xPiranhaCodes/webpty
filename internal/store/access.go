@@ -132,6 +132,25 @@ func (t *Tx) RevokeAccessGrant(ctx context.Context, terminalID, grantID string, 
 // RevokeActiveEditorGrants revokes every unrevoked editor grant of the
 // terminal, and their sessions, as replaced. It returns the revoked grants.
 func (t *Tx) RevokeActiveEditorGrants(ctx context.Context, terminalID string, now time.Time) ([]AccessGrant, error) {
+	ids, err := t.activeEditorGrantIDs(ctx, terminalID)
+	if err != nil {
+		return nil, err
+	}
+	revoked := make([]AccessGrant, 0, len(ids))
+	for _, id := range ids {
+		if err := t.revokeGrants(ctx, `public_id = ?`, []any{id}, RevokeReasonReplaced, now); err != nil {
+			return nil, err
+		}
+		grant, err := t.grant(ctx, `g.public_id = ?`, id)
+		if err != nil {
+			return nil, err
+		}
+		revoked = append(revoked, grant)
+	}
+	return revoked, nil
+}
+
+func (t *Tx) activeEditorGrantIDs(ctx context.Context, terminalID string) ([]string, error) {
 	rows, err := t.tx.QueryContext(ctx, `SELECT g.public_id`+grantFrom+`
 		WHERE t.public_id = ? AND g.role = 'editor' AND g.revoked_at IS NULL`, terminalID)
 	if err != nil {
@@ -150,18 +169,7 @@ func (t *Tx) RevokeActiveEditorGrants(ctx context.Context, terminalID string, no
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("find editor grants: %w", err)
 	}
-	revoked := make([]AccessGrant, 0, len(ids))
-	for _, id := range ids {
-		if err := t.revokeGrants(ctx, `public_id = ?`, []any{id}, RevokeReasonReplaced, now); err != nil {
-			return nil, err
-		}
-		grant, err := t.grant(ctx, `g.public_id = ?`, id)
-		if err != nil {
-			return nil, err
-		}
-		revoked = append(revoked, grant)
-	}
-	return revoked, nil
+	return ids, nil
 }
 
 func (t *Tx) revokeGrants(ctx context.Context, where string, args []any, reason string, now time.Time) error {
@@ -272,11 +280,7 @@ func scanGrantWith(row rowScanner, leading ...any) (AccessGrant, error) {
 	grant.CreatedAt = fromDB(createdAt)
 	grant.UpdatedAt = fromDB(updatedAt)
 	grant.ExpiresAt = fromDB(expiresAt)
-	if redeemedAt.Valid {
-		grant.RedeemedAt = fromDB(redeemedAt.Int64)
-	}
-	if revokedAt.Valid {
-		grant.RevokedAt = fromDB(revokedAt.Int64)
-	}
+	grant.RedeemedAt = fromNullDB(redeemedAt)
+	grant.RevokedAt = fromNullDB(revokedAt)
 	return grant, nil
 }

@@ -71,40 +71,65 @@ func (s *Store) AuditPage(ctx context.Context, cursor int64, limit int) (AuditEv
 	if limit < 1 || limit > MaxAuditPage || cursor < 0 {
 		return AuditEventPage{}, fmt.Errorf("list audit events: limit must be 1..%d and cursor non-negative", MaxAuditPage)
 	}
-	query := `SELECT id, occurred_at, event_type, remote_addr, details FROM audit_events ORDER BY id DESC LIMIT ?`
-	args := []any{limit + 1}
-	if cursor > 0 {
-		query = `SELECT id, occurred_at, event_type, remote_addr, details FROM audit_events WHERE id < ? ORDER BY id DESC LIMIT ?`
-		args = []any{cursor, limit + 1}
-	}
+	query, args := auditPageQuery(cursor, limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return AuditEventPage{}, fmt.Errorf("list audit events: %w", err)
 	}
 	defer rows.Close()
-
-	page := AuditEventPage{Events: make([]AuditRecord, 0, limit)}
-	for rows.Next() {
-		var record AuditRecord
-		var occurredAt int64
-		var details string
-		if err := rows.Scan(&record.ID, &occurredAt, &record.Type, &record.RemoteAddr, &details); err != nil {
-			return AuditEventPage{}, fmt.Errorf("scan audit event: %w", err)
-		}
-		record.OccurredAt = fromDB(occurredAt)
-		if err := json.Unmarshal([]byte(details), &record.Details); err != nil {
-			return AuditEventPage{}, fmt.Errorf("decode audit details: %w", err)
-		}
-		page.Events = append(page.Events, record)
+	records, err := scanAuditRecords(rows, limit)
+	if err != nil {
+		return AuditEventPage{}, err
 	}
-	if err := rows.Err(); err != nil {
-		return AuditEventPage{}, fmt.Errorf("list audit events: %w", err)
-	}
-	if len(page.Events) > limit {
-		page.Events = page.Events[:limit]
-		page.Next = page.Events[limit-1].ID
+	page := AuditEventPage{Events: records}
+	if len(records) > limit {
+		page.Events = records[:limit]
+		page.Next = records[limit-1].ID
 	}
 	return page, nil
+}
+
+func scanAuditRecords(rows *sql.Rows, limit int) ([]AuditRecord, error) {
+	records := make([]AuditRecord, 0, limit)
+	for rows.Next() {
+		var id int64
+		event, err := scanAuditEvent(rows, &id)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, AuditRecord{ID: id, AuditEvent: event})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list audit events: %w", err)
+	}
+	return records, nil
+}
+
+// auditPageQuery selects one row past limit so the caller can tell whether
+// another page follows.
+func auditPageQuery(cursor int64, limit int) (string, []any) {
+	const columns = `SELECT id, occurred_at, event_type, remote_addr, details FROM audit_events`
+	if cursor > 0 {
+		return columns + ` WHERE id < ? ORDER BY id DESC LIMIT ?`, []any{cursor, limit + 1}
+	}
+	return columns + ` ORDER BY id DESC LIMIT ?`, []any{limit + 1}
+}
+
+// scanAuditEvent scans one audit row; leading receives any columns that
+// precede occurred_at.
+func scanAuditEvent(row rowScanner, leading ...any) (AuditEvent, error) {
+	var event AuditEvent
+	var occurredAt int64
+	var details string
+	dest := append(leading, &occurredAt, &event.Type, &event.RemoteAddr, &details)
+	if err := row.Scan(dest...); err != nil {
+		return AuditEvent{}, fmt.Errorf("scan audit event: %w", err)
+	}
+	event.OccurredAt = fromDB(occurredAt)
+	if err := json.Unmarshal([]byte(details), &event.Details); err != nil {
+		return AuditEvent{}, fmt.Errorf("decode audit details: %w", err)
+	}
+	return event, nil
 }
 
 // AuditEvents lists audit events in insertion order.
@@ -118,15 +143,9 @@ func (s *Store) AuditEvents(ctx context.Context) ([]AuditEvent, error) {
 
 	var events []AuditEvent
 	for rows.Next() {
-		var event AuditEvent
-		var occurredAt int64
-		var details string
-		if err := rows.Scan(&occurredAt, &event.Type, &event.RemoteAddr, &details); err != nil {
-			return nil, fmt.Errorf("scan audit event: %w", err)
-		}
-		event.OccurredAt = fromDB(occurredAt)
-		if err := json.Unmarshal([]byte(details), &event.Details); err != nil {
-			return nil, fmt.Errorf("decode audit details: %w", err)
+		event, err := scanAuditEvent(rows)
+		if err != nil {
+			return nil, err
 		}
 		events = append(events, event)
 	}

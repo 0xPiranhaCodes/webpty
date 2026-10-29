@@ -26,17 +26,25 @@ func LockDatabase(path string) (release func() error, err error) {
 		_ = file.Close()
 		return nil, fmt.Errorf("lock database: %w", err)
 	}
-	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		_ = file.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) {
-			return nil, fmt.Errorf("%s: %w", path, ErrDatabaseInUse)
-		}
-		return nil, fmt.Errorf("lock database: %w", err)
+	if err := lockExclusive(fd, file, path); err != nil {
+		return nil, err
 	}
 	return func() error {
 		_ = unix.Flock(fd, unix.LOCK_UN)
 		return file.Close()
 	}, nil
+}
+
+// lockExclusive takes the lock without waiting, closing file on failure.
+func lockExclusive(fd int, file *os.File, path string) error {
+	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = file.Close()
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return fmt.Errorf("%s: %w", path, ErrDatabaseInUse)
+		}
+		return fmt.Errorf("lock database: %w", err)
+	}
+	return nil
 }
 
 // LockState describes path+".lock" as InspectLock found it.
@@ -67,6 +75,12 @@ func InspectLock(path string) (LockState, error) {
 	if err := requireRegular(file); err != nil {
 		return LockState{}, err
 	}
+	return probeLock(fd, name)
+}
+
+// probeLock describes the open lock file, holding a momentary shared lock
+// to see whether another process has it.
+func probeLock(fd int, name string) (LockState, error) {
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
 		return LockState{}, &os.PathError{Op: "stat", Path: name, Err: err}

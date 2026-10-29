@@ -65,16 +65,22 @@ func (s *Store) WithTx(ctx context.Context, fn func(*Tx) error) (err error) {
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer func() {
-		if p := recover(); p != nil {
-			_ = tx.Rollback()
-			panic(p)
-		}
-	}()
+	defer rollbackOnPanic(tx)
 	if err := fn(&Tx{tx: tx}); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
+	return commitTx(ctx, tx)
+}
+
+func rollbackOnPanic(tx *sql.Tx) {
+	if p := recover(); p != nil {
+		_ = tx.Rollback()
+		panic(p)
+	}
+}
+
+func commitTx(ctx context.Context, tx *sql.Tx) error {
 	// Once ctx is done database/sql rolls the transaction back on its own,
 	// so the cancellation is reported instead of a bare ErrTxDone.
 	if err := ctx.Err(); err != nil {
@@ -90,3 +96,11 @@ func (s *Store) WithTx(ctx context.Context, fn func(*Tx) error) (err error) {
 func toDB(t time.Time) int64 { return t.UnixNano() }
 
 func fromDB(v int64) time.Time { return time.Unix(0, v) }
+
+// fromNullDB converts a nullable column; NULL is the zero time.
+func fromNullDB(v sql.NullInt64) time.Time {
+	if !v.Valid {
+		return time.Time{}
+	}
+	return fromDB(v.Int64)
+}

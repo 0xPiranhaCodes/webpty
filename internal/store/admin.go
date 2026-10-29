@@ -145,21 +145,31 @@ func (s *Store) DeleteExpiredAdminSessions(ctx context.Context, now time.Time) e
 func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error) {
 	var removed int64
 	err := s.WithTx(ctx, func(tx *Tx) error {
-		for _, query := range []string{
-			`DELETE FROM admin_sessions WHERE expires_at <= ?`,
-			`DELETE FROM access_sessions WHERE expires_at <= ?`,
-		} {
-			result, err := tx.tx.ExecContext(ctx, query, toDB(now))
+		for _, query := range expiredSessionDeletes {
+			n, err := tx.deleteExpired(ctx, query, now)
 			if err != nil {
-				return fmt.Errorf("delete expired sessions: %w", err)
-			}
-			n, err := result.RowsAffected()
-			if err != nil {
-				return fmt.Errorf("delete expired sessions: %w", err)
+				return err
 			}
 			removed += n
 		}
 		return nil
 	})
 	return removed, err
+}
+
+var expiredSessionDeletes = []string{
+	`DELETE FROM admin_sessions WHERE expires_at <= ?`,
+	`DELETE FROM access_sessions WHERE expires_at <= ?`,
+}
+
+func (t *Tx) deleteExpired(ctx context.Context, query string, now time.Time) (int64, error) {
+	result, err := t.tx.ExecContext(ctx, query, toDB(now))
+	if err != nil {
+		return 0, fmt.Errorf("delete expired sessions: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete expired sessions: %w", err)
+	}
+	return n, nil
 }
