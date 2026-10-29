@@ -161,30 +161,9 @@ func (s *Service) CreateGrant(ctx context.Context, req GrantRequest) (Invitation
 	}
 	var replaced []store.AccessGrant
 	err = s.config.Store.WithTx(ctx, func(tx *store.Tx) error {
-		if grant.Role == store.AccessEditor {
-			var err error
-			if replaced, err = tx.RevokeActiveEditorGrants(ctx, grant.TerminalID, grant.CreatedAt); err != nil {
-				return err
-			}
-		}
-		if err := tx.CreateAccessGrant(ctx, grant, HashToken(token)); err != nil {
-			return err
-		}
-		for _, old := range replaced {
-			if err := s.audit(ctx, tx, "access.grant.replaced", req.RemoteAddr, map[string]string{
-				"terminalId": grant.TerminalID, "grantId": old.PublicID, "replacedBy": grant.PublicID,
-			}); err != nil {
-				return err
-			}
-		}
-		if err := s.audit(ctx, tx, "access.grant.created", req.RemoteAddr, map[string]string{
-			"terminalId": grant.TerminalID, "grantId": grant.PublicID, "role": string(grant.Role),
-			"singleUse": strconv.FormatBool(grant.SingleUse), "maxRedemptions": strconv.Itoa(grant.MaxRedemptions),
-			"expiresAt": grant.ExpiresAt.UTC().Format(time.RFC3339),
-		}); err != nil {
-			return err
-		}
-		return s.precommit(ctx)
+		var err error
+		replaced, err = s.insertGrant(ctx, tx, grant, token, req.RemoteAddr)
+		return err
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		return Invitation{}, ErrNotFound
@@ -193,36 +172,65 @@ func (s *Service) CreateGrant(ctx context.Context, req GrantRequest) (Invitation
 		return Invitation{}, err
 	}
 	if len(replaced) > 0 {
-		ids := make([]string, len(replaced))
-		for i, old := range replaced {
-			ids[i] = old.PublicID
-		}
-		s.notifyGrants(grant.TerminalID, ids, ReasonReplaced)
+		s.notifyGrants(grant.TerminalID, grantIDs(replaced), ReasonReplaced)
 	}
 	return Invitation{Grant: grant, Token: token, Replaced: replaced}, nil
+}
+
+// insertGrant stores grant under the hash of token, revoking the
+// terminal's previous editor grant first when grant is an editor grant.
+// Only the hash is stored; the token itself is returned once to the caller.
+func (s *Service) insertGrant(ctx context.Context, tx *store.Tx, grant store.AccessGrant, token, remoteAddr string) ([]store.AccessGrant, error) {
+	var replaced []store.AccessGrant
+	if grant.Role == store.AccessEditor {
+		var err error
+		if replaced, err = tx.RevokeActiveEditorGrants(ctx, grant.TerminalID, grant.CreatedAt); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.CreateAccessGrant(ctx, grant, HashToken(token)); err != nil {
+		return nil, err
+	}
+	for _, old := range replaced {
+		if err := s.audit(ctx, tx, "access.grant.replaced", remoteAddr, map[string]string{
+			"terminalId": grant.TerminalID, "grantId": old.PublicID, "replacedBy": grant.PublicID,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.audit(ctx, tx, "access.grant.created", remoteAddr, grantCreatedDetails(grant)); err != nil {
+		return nil, err
+	}
+	return replaced, s.precommit(ctx)
+}
+
+func grantCreatedDetails(grant store.AccessGrant) map[string]string {
+	return map[string]string{
+		"terminalId": grant.TerminalID, "grantId": grant.PublicID, "role": string(grant.Role),
+		"singleUse": strconv.FormatBool(grant.SingleUse), "maxRedemptions": strconv.Itoa(grant.MaxRedemptions),
+		"expiresAt": grant.ExpiresAt.UTC().Format(time.RFC3339),
+	}
+}
+
+func grantIDs(grants []store.AccessGrant) []string {
+	ids := make([]string, len(grants))
+	for i, grant := range grants {
+		ids[i] = grant.PublicID
+	}
+	return ids
 }
 
 func (s *Service) normalize(req GrantRequest) (store.AccessGrant, error) {
 	if req.Role != store.AccessEditor && req.Role != store.AccessViewer {
 		return store.AccessGrant{}, fmt.Errorf("%w: role must be editor or viewer", ErrInvalidArgument)
 	}
-	ttl := req.TTL
-	if ttl == 0 {
-		ttl = s.config.DefaultGrantTTL
+	ttl, err := s.grantTTL(req.TTL)
+	if err != nil {
+		return store.AccessGrant{}, err
 	}
-	if ttl < MinGrantTTL || ttl > s.config.MaxGrantTTL {
-		return store.AccessGrant{}, fmt.Errorf("%w: ttl must be between %v and %v", ErrInvalidArgument, MinGrantTTL, s.config.MaxGrantTTL)
-	}
-	uses := req.MaxRedemptions
-	switch {
-	case uses < 0 || uses > s.config.MaxRedemptions:
-		return store.AccessGrant{}, fmt.Errorf("%w: maxRedemptions must be between 1 and %d", ErrInvalidArgument, s.config.MaxRedemptions)
-	case req.SingleUse && uses > 1:
-		return store.AccessGrant{}, fmt.Errorf("%w: a single-use grant has one redemption", ErrInvalidArgument)
-	case req.SingleUse:
-		uses = 1
-	case uses == 0:
-		uses = s.config.MaxRedemptions
+	uses, err := s.redemptions(req)
+	if err != nil {
+		return store.AccessGrant{}, err
 	}
 	if !validLabel(req.Label) {
 		return store.AccessGrant{}, fmt.Errorf("%w: label must be at most %d bytes of printable text", ErrInvalidArgument, MaxLabelBytes)
@@ -236,6 +244,34 @@ func (s *Service) normalize(req GrantRequest) (store.AccessGrant, error) {
 		PublicID: id, TerminalID: req.TerminalID, Role: req.Role, Label: req.Label, SingleUse: req.SingleUse,
 		MaxRedemptions: uses, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(ttl),
 	}, nil
+}
+
+// grantTTL applies the default to a zero TTL and enforces the bounds.
+func (s *Service) grantTTL(ttl time.Duration) (time.Duration, error) {
+	if ttl == 0 {
+		ttl = s.config.DefaultGrantTTL
+	}
+	if ttl < MinGrantTTL || ttl > s.config.MaxGrantTTL {
+		return 0, fmt.Errorf("%w: ttl must be between %v and %v", ErrInvalidArgument, MinGrantTTL, s.config.MaxGrantTTL)
+	}
+	return ttl, nil
+}
+
+// redemptions resolves how many times the grant may be redeemed: one when
+// single-use, the configured maximum when unset.
+func (s *Service) redemptions(req GrantRequest) (int, error) {
+	uses := req.MaxRedemptions
+	switch {
+	case uses < 0 || uses > s.config.MaxRedemptions:
+		return 0, fmt.Errorf("%w: maxRedemptions must be between 1 and %d", ErrInvalidArgument, s.config.MaxRedemptions)
+	case req.SingleUse && uses > 1:
+		return 0, fmt.Errorf("%w: a single-use grant has one redemption", ErrInvalidArgument)
+	case req.SingleUse:
+		return 1, nil
+	case uses == 0:
+		return s.config.MaxRedemptions, nil
+	}
+	return uses, nil
 }
 
 func validLabel(label string) bool {
@@ -298,65 +334,82 @@ func (s *Service) RedeemReplacing(ctx context.Context, token, previous, remoteAd
 	if !wellFormed(token) {
 		return Session{}, ErrInvalidToken
 	}
-	var superseded *store.AccessSession
 	sessionToken, err := randomToken(tokenBytes)
 	if err != nil {
 		return Session{}, err
 	}
-	now := s.config.Now()
-	session := Session{Token: sessionToken}
-	err = s.config.Store.WithTx(ctx, func(tx *store.Tx) error {
-		grant, err := tx.RedeemAccessGrant(ctx, HashToken(token), now)
-		if err != nil {
-			return err
-		}
-		expires := now.Add(s.config.SessionTTL)
-		if grant.ExpiresAt.Before(expires) {
-			expires = grant.ExpiresAt
-		}
-		session.Grant, session.ExpiresAt = grant, expires
-		if session.ID, err = tx.CreateAccessSession(ctx, HashToken(sessionToken), grant.PublicID, now, expires); err != nil {
-			return err
-		}
-		if err := s.audit(ctx, tx, "access.grant.redeemed", remoteAddr, map[string]string{
-			"terminalId": grant.TerminalID, "grantId": grant.PublicID, "role": string(grant.Role),
-			"redemptionCount": strconv.Itoa(grant.RedemptionCount),
-		}); err != nil {
-			return err
-		}
-		if wellFormed(previous) {
-			old, err := tx.RevokeAccessSession(ctx, HashToken(previous), now)
-			switch {
-			case errors.Is(err, store.ErrNotFound):
-			case err != nil:
-				return err
-			default:
-				superseded = &old
-				if err := s.audit(ctx, tx, "access.session.superseded", remoteAddr, map[string]string{
-					"terminalId": old.Grant.TerminalID, "grantId": old.Grant.PublicID, "role": string(old.Grant.Role),
-					"replacedBy": grant.PublicID,
-				}); err != nil {
-					return err
-				}
-			}
-		}
-		if check != nil {
-			if err := check(grant); err != nil {
-				return err
-			}
-		}
-		return s.precommit(ctx)
-	})
+	r := redemption{token: token, previous: previous, remoteAddr: remoteAddr, now: s.config.Now(), check: check,
+		session: Session{Token: sessionToken}}
+	err = s.config.Store.WithTx(ctx, func(tx *store.Tx) error { return s.redeemTx(ctx, tx, &r) })
 	if errors.Is(err, store.ErrNotFound) {
 		return Session{}, ErrInvalidToken
 	}
 	if err != nil {
 		return Session{}, err
 	}
-	if superseded != nil && s.config.Listener != nil {
-		s.config.Listener.SessionRevoked(superseded.ID, ReasonSuperseded)
+	if r.superseded != nil && s.config.Listener != nil {
+		s.config.Listener.SessionRevoked(r.superseded.ID, ReasonSuperseded)
 	}
-	return session, nil
+	return r.session, nil
+}
+
+// redemption carries one RedeemReplacing call through its transaction.
+type redemption struct {
+	token, previous, remoteAddr string
+	now                         time.Time
+	check                       func(store.AccessGrant) error
+	session                     Session
+	superseded                  *store.AccessSession
+}
+
+func (s *Service) redeemTx(ctx context.Context, tx *store.Tx, r *redemption) error {
+	grant, err := tx.RedeemAccessGrant(ctx, HashToken(r.token), r.now)
+	if err != nil {
+		return err
+	}
+	// A session never outlives the grant it came from.
+	expires := r.now.Add(s.config.SessionTTL)
+	if grant.ExpiresAt.Before(expires) {
+		expires = grant.ExpiresAt
+	}
+	r.session.Grant, r.session.ExpiresAt = grant, expires
+	if r.session.ID, err = tx.CreateAccessSession(ctx, HashToken(r.session.Token), grant.PublicID, r.now, expires); err != nil {
+		return err
+	}
+	if err := s.audit(ctx, tx, "access.grant.redeemed", r.remoteAddr, map[string]string{
+		"terminalId": grant.TerminalID, "grantId": grant.PublicID, "role": string(grant.Role),
+		"redemptionCount": strconv.Itoa(grant.RedemptionCount),
+	}); err != nil {
+		return err
+	}
+	if err := s.supersede(ctx, tx, r, grant); err != nil {
+		return err
+	}
+	if r.check != nil {
+		if err := r.check(grant); err != nil {
+			return err
+		}
+	}
+	return s.precommit(ctx)
+}
+
+// supersede revokes the caller's previous access session, if it is still live.
+func (s *Service) supersede(ctx context.Context, tx *store.Tx, r *redemption, grant store.AccessGrant) error {
+	if !wellFormed(r.previous) {
+		return nil
+	}
+	old, err := tx.RevokeAccessSession(ctx, HashToken(r.previous), r.now)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil
+	case err != nil:
+		return err
+	}
+	r.superseded = &old
+	return s.audit(ctx, tx, "access.session.superseded", r.remoteAddr, map[string]string{
+		"terminalId": old.Grant.TerminalID, "grantId": old.Grant.PublicID, "role": string(old.Grant.Role),
+		"replacedBy": grant.PublicID,
+	})
 }
 
 // Authenticate resolves an access-session token to a live session.
