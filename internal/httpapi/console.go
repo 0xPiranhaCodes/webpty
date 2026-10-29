@@ -51,15 +51,8 @@ func (api *consoleAPI) audit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	limit, ok := queryInt(w, r, "limit")
+	limit, ok := auditLimit(w, r)
 	if !ok {
-		return
-	}
-	if r.URL.Query().Get("limit") == "" {
-		limit = defaultAuditPage
-	}
-	if limit < 1 || limit > store.MaxAuditPage {
-		writeCodedError(w, http.StatusBadRequest, "invalid_argument", "limit must be 1.."+strconv.Itoa(store.MaxAuditPage))
 		return
 	}
 	page, err := api.store.AuditPage(r.Context(), cursor, int(limit))
@@ -67,10 +60,32 @@ func (api *consoleAPI) audit(w http.ResponseWriter, r *http.Request) {
 		internalError(w, "audit page", err)
 		return
 	}
-	body := struct {
-		Events     []auditEventJSON `json:"events"`
-		NextCursor *string          `json:"nextCursor"`
-	}{Events: make([]auditEventJSON, 0, len(page.Events))}
+	writeJSON(w, http.StatusOK, auditPageBody(page))
+}
+
+// auditLimit reads the page size, defaulting when absent.
+func auditLimit(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	limit, ok := queryInt(w, r, "limit")
+	if !ok {
+		return 0, false
+	}
+	if r.URL.Query().Get("limit") == "" {
+		limit = defaultAuditPage
+	}
+	if limit < 1 || limit > store.MaxAuditPage {
+		writeCodedError(w, http.StatusBadRequest, "invalid_argument", "limit must be 1.."+strconv.Itoa(store.MaxAuditPage))
+		return 0, false
+	}
+	return limit, true
+}
+
+type auditPageJSON struct {
+	Events     []auditEventJSON `json:"events"`
+	NextCursor *string          `json:"nextCursor"`
+}
+
+func auditPageBody(page store.AuditEventPage) auditPageJSON {
+	body := auditPageJSON{Events: make([]auditEventJSON, 0, len(page.Events))}
 	for _, event := range page.Events {
 		details := event.Details
 		if details == nil {
@@ -85,7 +100,7 @@ func (api *consoleAPI) audit(w http.ResponseWriter, r *http.Request) {
 		next := strconv.FormatInt(page.Next, 10)
 		body.NextCursor = &next
 	}
-	writeJSON(w, http.StatusOK, body)
+	return body
 }
 
 func (api *consoleAPI) runtimeSettings(w http.ResponseWriter, _ *http.Request) {
