@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 	"unicode/utf8"
 
 	"github.com/0xPiranhaCodes/webpty/internal/store"
@@ -73,12 +74,11 @@ type List struct {
 
 // Recordings lists a page of recordings newest first.
 func (s *Service) Recordings(ctx context.Context, q ListQuery) (List, error) {
-	switch {
-	case q.Limit == 0:
-		q.Limit = DefaultListLimit
-	case q.Limit < 0 || q.Limit > MaxListLimit:
-		return List{}, fmt.Errorf("%w: limit must be 1..%d", ErrInvalidArgument, MaxListLimit)
+	limit, err := pageLimit(q.Limit, DefaultListLimit, MaxListLimit)
+	if err != nil {
+		return List{}, err
 	}
+	q.Limit = limit
 	recs, err := s.cfg.Store.Recordings(ctx, store.RecordingFilter{TerminalID: q.TerminalID, Limit: q.Limit + 1, Before: q.Before})
 	if errors.Is(err, store.ErrNotFound) {
 		return List{}, fmt.Errorf("%w: unknown cursor", ErrInvalidArgument)
@@ -94,25 +94,27 @@ func (s *Service) Recordings(ctx context.Context, q ListQuery) (List, error) {
 	return list, nil
 }
 
+// pageLimit applies the default to a zero limit and rejects one outside 1..max.
+func pageLimit(limit, fallback, max int) (int, error) {
+	switch {
+	case limit == 0:
+		return fallback, nil
+	case limit < 0 || limit > max:
+		return 0, fmt.Errorf("%w: limit must be 1..%d", ErrInvalidArgument, max)
+	}
+	return limit, nil
+}
+
 // Events returns validated events of a recording. Pages are deterministic:
 // the same query always returns the same events. Corrupt data is never
 // returned; it marks the recording incomplete and returns a *CorruptError.
 func (s *Service) Events(ctx context.Context, id string, q Query, remoteAddr string) (Page, error) {
-	switch {
-	case q.Limit == 0:
-		q.Limit = DefaultPageEvents
-	case q.Limit < 0 || q.Limit > MaxPageEvents:
-		return Page{}, fmt.Errorf("%w: limit must be 1..%d", ErrInvalidArgument, MaxPageEvents)
+	if err := q.normalize(); err != nil {
+		return Page{}, err
 	}
-	if q.AfterMS < 0 || q.AfterSeq < 0 {
-		return Page{}, fmt.Errorf("%w: afterMs and afterSeq must not be negative", ErrInvalidArgument)
-	}
-	chunks, err := s.cfg.Store.RecordingChunks(ctx, id, store.ChunkQuery{
+	chunks, err := s.chunkPage(ctx, id, store.ChunkQuery{
 		AfterSeq: q.AfterSeq, AfterMS: q.AfterMS, MaxEvents: q.Limit, MaxChunks: pageChunks,
 	})
-	if errors.Is(err, store.ErrNotFound) {
-		return Page{}, ErrNotFound
-	}
 	if err != nil {
 		return Page{}, err
 	}
@@ -121,48 +123,117 @@ func (s *Service) Events(ctx context.Context, id string, q Query, remoteAddr str
 		return Page{}, ErrDeleted
 	}
 
-	cur := newChunkCursor(rec, chunks.Previous)
-	var events []Event
-	examined, full := q.AfterSeq, false
-	for _, c := range chunks.Chunks {
-		decoded, err := cur.next(c)
-		if err != nil {
-			return Page{}, s.corrupted(ctx, rec, err)
-		}
-		for _, e := range decoded {
-			if e.Seq <= q.AfterSeq || e.OffsetMS < q.AfterMS {
-				continue
-			}
-			events = append(events, e)
-			examined = e.Seq
-			if len(events) == q.Limit {
-				full = true
-				break
-			}
-		}
-		if full {
-			break
-		}
-		examined = max(examined, c.LastSeq)
-	}
-	if rec.Status != store.RecordingActive && !full && !chunks.More {
-		truncated := len(chunks.Chunks) > 0 && !cur.complete()
-		missing := len(chunks.Chunks) == 0 && q.AfterSeq < rec.EventCount && q.AfterMS <= rec.DurationMS
-		if truncated || missing {
-			return Page{}, s.corrupted(ctx, rec, corrupt("count"))
-		}
-	}
-
-	page := Page{Recording: rec, Events: events}
-	if (full && examined < rec.EventCount) || (!full && chunks.More) {
-		page.Next = &Cursor{AfterMS: q.AfterMS, AfterSeq: examined}
-	}
-	details := map[string]string{"recordingId": rec.PublicID, "terminalId": rec.TerminalID,
-		"events": strconv.Itoa(len(events))}
-	if err := s.auditNow(ctx, "recording.playback", remoteAddr, details); err != nil {
+	sel, err := s.validatedSelection(ctx, chunks, q)
+	if err != nil {
 		return Page{}, err
 	}
-	return page, nil
+	if err := s.auditNow(ctx, "recording.playback", remoteAddr, eventDetails(rec, len(sel.events))); err != nil {
+		return Page{}, err
+	}
+	return Page{Recording: rec, Events: sel.events, Next: sel.next(rec, q, chunks.More)}, nil
+}
+
+// validatedSelection picks the query's events from chunks, marking the
+// recording incomplete if they fail validation or fall short of its counts.
+func (s *Service) validatedSelection(ctx context.Context, chunks store.RecordingChunkPage, q Query) (selection, error) {
+	rec := chunks.Recording
+	cur := newChunkCursor(rec, chunks.Previous)
+	sel, err := selectEvents(&cur, chunks.Chunks, q)
+	if err != nil {
+		return selection{}, s.corrupted(ctx, rec, err)
+	}
+	if !sel.full && !chunks.More && endedShort(rec, chunks.Chunks, &cur, q) {
+		return selection{}, s.corrupted(ctx, rec, corrupt("count"))
+	}
+	return sel, nil
+}
+
+// chunkPage reads a run of chunks, mapping a missing recording to ErrNotFound.
+func (s *Service) chunkPage(ctx context.Context, id string, q store.ChunkQuery) (store.RecordingChunkPage, error) {
+	page, err := s.cfg.Store.RecordingChunks(ctx, id, q)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.RecordingChunkPage{}, ErrNotFound
+	}
+	return page, err
+}
+
+// eventDetails are the audit details of a read or export of n events.
+func eventDetails(rec store.Recording, n int) map[string]string {
+	return map[string]string{"recordingId": rec.PublicID, "terminalId": rec.TerminalID, "events": strconv.Itoa(n)}
+}
+
+// next is the cursor continuing after this selection, or nil when no events
+// remain.
+func (sel selection) next(rec store.Recording, q Query, more bool) *Cursor {
+	if (sel.full && sel.examined < rec.EventCount) || (!sel.full && more) {
+		return &Cursor{AfterMS: q.AfterMS, AfterSeq: sel.examined}
+	}
+	return nil
+}
+
+// normalize applies the default limit and rejects out-of-range values.
+func (q *Query) normalize() error {
+	limit, err := pageLimit(q.Limit, DefaultPageEvents, MaxPageEvents)
+	if err != nil {
+		return err
+	}
+	q.Limit = limit
+	if q.AfterMS < 0 || q.AfterSeq < 0 {
+		return fmt.Errorf("%w: afterMs and afterSeq must not be negative", ErrInvalidArgument)
+	}
+	return nil
+}
+
+// selection is the events a query picked from the chunks read. examined is
+// the last sequence consumed, so the next page resumes after it; full is
+// set when the limit was reached.
+type selection struct {
+	events   []Event
+	examined int64
+	full     bool
+}
+
+// selectEvents decodes chunks in order and keeps the events the query asks for.
+func selectEvents(cur *chunkCursor, chunks []store.RecordingChunk, q Query) (selection, error) {
+	sel := selection{examined: q.AfterSeq}
+	for _, c := range chunks {
+		decoded, err := cur.next(c)
+		if err != nil {
+			return selection{}, err
+		}
+		sel.take(decoded, q)
+		if sel.full {
+			break
+		}
+		sel.examined = max(sel.examined, c.LastSeq)
+	}
+	return sel, nil
+}
+
+// take appends the matching events of one chunk until the limit is reached.
+func (sel *selection) take(decoded []Event, q Query) {
+	for _, e := range decoded {
+		if e.Seq <= q.AfterSeq || e.OffsetMS < q.AfterMS {
+			continue
+		}
+		sel.events = append(sel.events, e)
+		sel.examined = e.Seq
+		if len(sel.events) == q.Limit {
+			sel.full = true
+			return
+		}
+	}
+}
+
+// endedShort reports whether an ended recording's last page falls short of
+// its recorded counts: a truncated chunk run, or no chunks where some exist.
+func endedShort(rec store.Recording, chunks []store.RecordingChunk, cur *chunkCursor, q Query) bool {
+	if rec.Status == store.RecordingActive {
+		return false
+	}
+	truncated := len(chunks) > 0 && !cur.complete()
+	missing := len(chunks) == 0 && q.AfterSeq < rec.EventCount && q.AfterMS <= rec.DurationMS
+	return truncated || missing
 }
 
 // corrupted marks rec incomplete when err is a *CorruptError, and returns err.
@@ -174,10 +245,17 @@ func (s *Service) corrupted(reqCtx context.Context, rec store.Recording, err err
 		return err
 	}
 	s.cfg.Logger.Error("recording failed validation", "recordingId", rec.PublicID, "check", cerr.Code)
+	if markErr := s.markIncomplete(reqCtx, rec); markErr != nil {
+		s.cfg.Logger.Error("mark recording corrupt", "recordingId", rec.PublicID, "error", markErr)
+	}
+	return err
+}
+
+func (s *Service) markIncomplete(reqCtx context.Context, rec store.Recording) error {
 	now := s.cfg.Now()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), s.cfg.StoreTimeout)
 	defer cancel()
-	markErr := s.cfg.Store.WithTx(ctx, func(tx *store.Tx) error {
+	return s.cfg.Store.WithTx(ctx, func(tx *store.Tx) error {
 		changed, err := tx.MarkRecordingIncomplete(ctx, rec.PublicID, CodeCorrupt, now, now.Add(s.cfg.Retention))
 		if err != nil || !changed {
 			return err
@@ -186,10 +264,6 @@ func (s *Service) corrupted(reqCtx context.Context, rec store.Recording, err err
 			"recordingId": rec.PublicID, "terminalId": rec.TerminalID, "code": CodeCorrupt,
 		})
 	})
-	if markErr != nil {
-		s.cfg.Logger.Error("mark recording corrupt", "recordingId", rec.PublicID, "error", markErr)
-	}
-	return err
 }
 
 // scan validates every chunk of an ended recording in order, calling fn for
@@ -199,45 +273,64 @@ func (s *Service) scan(ctx context.Context, id string, fn func(Event) error) (st
 	var first store.Recording
 	var cur chunkCursor
 	for started := false; ; started = true {
-		page, err := s.cfg.Store.RecordingChunks(ctx, id, store.ChunkQuery{
-			AfterSeq: cur.seq, MaxEvents: scanPageEvents, MaxChunks: pageChunks,
-		})
-		if errors.Is(err, store.ErrNotFound) {
-			return store.Recording{}, ErrNotFound
-		}
+		page, err := s.chunkPage(ctx, id, store.ChunkQuery{AfterSeq: cur.seq, MaxEvents: scanPageEvents, MaxChunks: pageChunks})
 		if err != nil {
 			return store.Recording{}, err
 		}
 		rec := page.Recording
-		switch {
-		case rec.Status == store.RecordingDeleted:
-			return rec, ErrDeleted
-		case rec.Status == store.RecordingActive:
-			return rec, ErrActive
-		case !started:
+		if err := s.checkScanPage(ctx, rec, first, started); err != nil {
+			return rec, err
+		}
+		if !started {
 			first = rec
 			cur = newChunkCursor(rec, page.Previous)
-		case rec.EventCount != first.EventCount || rec.ChunkCount != first.ChunkCount:
-			return rec, s.corrupted(ctx, rec, corrupt("count"))
 		}
-		for _, c := range page.Chunks {
-			events, err := cur.next(c)
-			if err != nil {
-				return rec, s.corrupted(ctx, rec, err)
-			}
-			for _, e := range events {
-				if err := fn(e); err != nil {
-					return rec, err
-				}
-			}
+		if err := s.scanChunks(ctx, &cur, rec, page.Chunks, fn); err != nil {
+			return rec, err
 		}
 		if !page.More {
-			if !cur.complete() {
-				return rec, s.corrupted(ctx, rec, corrupt("count"))
-			}
-			return first, nil
+			return s.endScan(ctx, &cur, first, rec)
 		}
 	}
+}
+
+// endScan accepts a scan that reached the last chunk only if every chunk
+// the recording counts was seen.
+func (s *Service) endScan(ctx context.Context, cur *chunkCursor, first, rec store.Recording) (store.Recording, error) {
+	if !cur.complete() {
+		return rec, s.corrupted(ctx, rec, corrupt("count"))
+	}
+	return first, nil
+}
+
+// checkScanPage rejects a page whose recording was deleted, is still active,
+// or changed size since the scan began.
+func (s *Service) checkScanPage(ctx context.Context, rec, first store.Recording, started bool) error {
+	switch {
+	case rec.Status == store.RecordingDeleted:
+		return ErrDeleted
+	case rec.Status == store.RecordingActive:
+		return ErrActive
+	case started && (rec.EventCount != first.EventCount || rec.ChunkCount != first.ChunkCount):
+		return s.corrupted(ctx, rec, corrupt("count"))
+	}
+	return nil
+}
+
+// scanChunks validates chunks through cur and passes each event to fn.
+func (s *Service) scanChunks(ctx context.Context, cur *chunkCursor, rec store.Recording, chunks []store.RecordingChunk, fn func(Event) error) error {
+	for _, c := range chunks {
+		events, err := cur.next(c)
+		if err != nil {
+			return s.corrupted(ctx, rec, err)
+		}
+		for _, e := range events {
+			if err := fn(e); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Export is an ended recording that passed validation and can be written
@@ -264,8 +357,7 @@ func (s *Service) PrepareExport(ctx context.Context, id, remoteAddr string) (*Ex
 	if err != nil {
 		return nil, err
 	}
-	details := map[string]string{"recordingId": rec.PublicID, "terminalId": rec.TerminalID, "events": strconv.Itoa(events)}
-	if err := s.auditNow(ctx, "recording.exported", remoteAddr, details); err != nil {
+	if err := s.auditNow(ctx, "recording.exported", remoteAddr, eventDetails(rec, events)); err != nil {
 		return nil, err
 	}
 	return &Export{s: s, rec: rec}, nil
@@ -273,6 +365,13 @@ func (s *Service) PrepareExport(ctx context.Context, id, remoteAddr string) (*Ex
 
 // Recording is the exported recording's metadata.
 func (x *Export) Recording() store.Recording { return x.rec }
+
+// asciicast v2 version and event codes.
+const (
+	castVersion = 2
+	castOutput  = "o"
+	castResize  = "r"
+)
 
 type castHeader struct {
 	Version   int     `json:"version"`
@@ -289,7 +388,7 @@ type castHeader struct {
 // meanwhile, WriteTo stops with an error after a partial, valid prefix.
 func (x *Export) WriteTo(ctx context.Context, w io.Writer) error {
 	out := bufio.NewWriter(w)
-	header, err := json.Marshal(castHeader{Version: 2, Width: x.rec.Cols, Height: x.rec.Rows,
+	header, err := json.Marshal(castHeader{Version: castVersion, Width: x.rec.Cols, Height: x.rec.Rows,
 		Timestamp: x.rec.StartedAt.Unix(), Duration: seconds(x.rec.DurationMS)})
 	if err != nil {
 		return err
@@ -297,48 +396,58 @@ func (x *Export) WriteTo(ctx context.Context, w io.Writer) error {
 	out.Write(header)
 	out.WriteByte('\n')
 
-	var carry []byte
-	writeEvent := func(ms int64, code, text string) error {
-		encoded, err := json.Marshal(text)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "[%s, %q, %s]\n", strconv.FormatFloat(seconds(ms), 'f', -1, 64), code, encoded)
-		return nil
-	}
-	flushCarry := func(ms int64) error {
-		if len(carry) == 0 {
-			return nil
-		}
-		text := string(carry)
-		carry = nil
-		return writeEvent(ms, "o", text)
-	}
-	_, err = x.s.scan(ctx, x.rec.PublicID, func(e Event) error {
-		switch e.Kind {
-		case KindOutput:
-			data := append(carry, e.Output...)
-			complete, rest := splitIncompleteUTF8(data)
-			carry = append([]byte(nil), rest...)
-			if len(complete) == 0 {
-				return nil
-			}
-			return writeEvent(e.OffsetMS, "o", string(complete))
-		case KindResize:
-			if err := flushCarry(e.OffsetMS); err != nil {
-				return err
-			}
-			return writeEvent(e.OffsetMS, "r", fmt.Sprintf("%dx%d", e.Cols, e.Rows))
-		}
-		return nil
-	})
-	if err != nil {
+	cw := &castWriter{out: out}
+	if _, err := x.s.scan(ctx, x.rec.PublicID, cw.add); err != nil {
 		return err
 	}
-	if err := flushCarry(x.rec.DurationMS); err != nil {
+	if err := cw.flushCarry(x.rec.DurationMS); err != nil {
 		return err
 	}
 	return out.Flush()
+}
+
+// castWriter writes asciicast event lines, holding back an unfinished UTF-8
+// sequence (carry) until the rest of it arrives.
+type castWriter struct {
+	out   *bufio.Writer
+	carry []byte
+}
+
+func (c *castWriter) add(e Event) error {
+	switch e.Kind {
+	case KindOutput:
+		data := append(c.carry, e.Output...)
+		complete, rest := splitIncompleteUTF8(data)
+		c.carry = append([]byte(nil), rest...)
+		if len(complete) == 0 {
+			return nil
+		}
+		return c.event(e.OffsetMS, castOutput, string(complete))
+	case KindResize:
+		if err := c.flushCarry(e.OffsetMS); err != nil {
+			return err
+		}
+		return c.event(e.OffsetMS, castResize, fmt.Sprintf("%dx%d", e.Cols, e.Rows))
+	}
+	return nil
+}
+
+func (c *castWriter) event(ms int64, code, text string) error {
+	encoded, err := json.Marshal(text)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "[%s, %q, %s]\n", strconv.FormatFloat(seconds(ms), 'f', -1, 64), code, encoded)
+	return nil
+}
+
+func (c *castWriter) flushCarry(ms int64) error {
+	if len(c.carry) == 0 {
+		return nil
+	}
+	text := string(c.carry)
+	c.carry = nil
+	return c.event(ms, castOutput, text)
 }
 
 func seconds(ms int64) float64 { return float64(ms) / 1000 }
@@ -389,26 +498,7 @@ func (s *Service) Delete(ctx context.Context, id, remoteAddr string) (store.Reco
 func (s *Service) RunRetention(ctx context.Context) (int, error) {
 	total := 0
 	for {
-		now := s.cfg.Now()
-		var ids []string
-		err := s.cfg.Store.WithTx(ctx, func(tx *store.Tx) error {
-			var err error
-			if ids, err = tx.ExpiredRecordings(ctx, now, s.cfg.RetentionBatch); err != nil {
-				return err
-			}
-			for _, id := range ids {
-				rec, changed, err := tx.DeleteRecording(ctx, id, now)
-				if err != nil {
-					return err
-				}
-				if changed {
-					if err := s.audit(ctx, tx, "recording.retention.deleted", "", countDetails(rec)); err != nil {
-						return err
-					}
-				}
-			}
-			return nil
-		})
+		ids, err := s.deleteExpired(ctx)
 		if err != nil {
 			return total, err
 		}
@@ -417,4 +507,32 @@ func (s *Service) RunRetention(ctx context.Context) (int, error) {
 			return total, nil
 		}
 	}
+}
+
+// deleteExpired deletes one batch of expired recordings in a transaction and
+// returns their IDs.
+func (s *Service) deleteExpired(ctx context.Context) ([]string, error) {
+	now := s.cfg.Now()
+	var ids []string
+	err := s.cfg.Store.WithTx(ctx, func(tx *store.Tx) error {
+		var err error
+		if ids, err = tx.ExpiredRecordings(ctx, now, s.cfg.RetentionBatch); err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if err := s.deleteForRetention(ctx, tx, id, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return ids, err
+}
+
+func (s *Service) deleteForRetention(ctx context.Context, tx *store.Tx, id string, now time.Time) error {
+	rec, changed, err := tx.DeleteRecording(ctx, id, now)
+	if err != nil || !changed {
+		return err
+	}
+	return s.audit(ctx, tx, "recording.retention.deleted", "", countDetails(rec))
 }

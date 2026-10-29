@@ -157,31 +157,58 @@ func decodeLine(line []byte) (Event, error) {
 		return Event{}, corrupt("version")
 	}
 	e := Event{Seq: r.Seq, OffsetMS: r.MS, Kind: r.Kind}
-	valid := false
-	switch r.Kind {
-	case KindOutput:
-		var d outputData
-		valid = strictDecode(r.Data, &d) == nil && len(d.Data) > 0 && len(d.Data) <= MaxOutputEventBytes
-		e.Output = d.Data
-	case KindResize:
-		var d resizeData
-		valid = strictDecode(r.Data, &d) == nil && d.Rows >= 1 && d.Rows <= session.MaxRows && d.Cols >= 1 && d.Cols <= session.MaxCols
-		e.Rows, e.Cols = d.Rows, d.Cols
-	case KindLifecycle:
-		var d Lifecycle
-		valid = strictDecode(r.Data, &d) == nil && lifecycleStates[d.State] && len(d.Signal) <= maxLabel && len(d.Reason) <= maxLabel
-		e.Lifecycle = &d
-	case KindPresence:
-		var d Presence
-		valid = strictDecode(r.Data, &d) == nil && presenceEvents[d.Event] && presenceRoles[d.Role] &&
-			d.ParticipantID != "" && len(d.ParticipantID) <= maxLabel && len(d.Reason) <= maxLabel
-		e.Presence = &d
-	}
-	if !valid {
+	if !e.decodePayload(r.Data) {
 		return Event{}, corrupt("decode")
 	}
 	return e, nil
 }
+
+// decodePayload fills the kind-specific fields from raw and reports whether
+// they are valid; an unknown kind is invalid.
+func (e *Event) decodePayload(raw []byte) bool {
+	switch e.Kind {
+	case KindOutput:
+		return e.decodeOutput(raw)
+	case KindResize:
+		return e.decodeResize(raw)
+	case KindLifecycle:
+		return e.decodeLifecycle(raw)
+	case KindPresence:
+		return e.decodePresence(raw)
+	}
+	return false
+}
+
+func (e *Event) decodeOutput(raw []byte) bool {
+	var d outputData
+	ok := strictDecode(raw, &d) == nil && len(d.Data) > 0 && len(d.Data) <= MaxOutputEventBytes
+	e.Output = d.Data
+	return ok
+}
+
+func (e *Event) decodeResize(raw []byte) bool {
+	var d resizeData
+	ok := strictDecode(raw, &d) == nil && inRange(d.Rows, session.MaxRows) && inRange(d.Cols, session.MaxCols)
+	e.Rows, e.Cols = d.Rows, d.Cols
+	return ok
+}
+
+func (e *Event) decodeLifecycle(raw []byte) bool {
+	var d Lifecycle
+	ok := strictDecode(raw, &d) == nil && lifecycleStates[d.State] && len(d.Signal) <= maxLabel && len(d.Reason) <= maxLabel
+	e.Lifecycle = &d
+	return ok
+}
+
+func (e *Event) decodePresence(raw []byte) bool {
+	var d Presence
+	ok := strictDecode(raw, &d) == nil && presenceEvents[d.Event] && presenceRoles[d.Role] &&
+		d.ParticipantID != "" && len(d.ParticipantID) <= maxLabel && len(d.Reason) <= maxLabel
+	e.Presence = &d
+	return ok
+}
+
+func inRange(v, max int) bool { return v >= 1 && v <= max }
 
 func strictDecode(data []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -214,38 +241,75 @@ func (b *chunkBuilder) add(line []byte, e Event) {
 func (b *chunkBuilder) len() int { return b.buf.Len() }
 
 func (b *chunkBuilder) seal(index int64) (store.RecordingChunk, error) {
-	var compressed bytes.Buffer
-	w := gzip.NewWriter(&compressed)
-	if _, err := w.Write(b.buf.Bytes()); err != nil {
+	compressed, err := gzipBytes(b.buf.Bytes())
+	if err != nil {
 		return store.RecordingChunk{}, err
 	}
-	if err := w.Close(); err != nil {
-		return store.RecordingChunk{}, err
-	}
-	sum := sha256.Sum256(compressed.Bytes())
+	sum := sha256.Sum256(compressed)
 	c := store.RecordingChunk{
 		Index: index, FirstSeq: b.first.Seq, LastSeq: b.last.Seq, FirstOffsetMS: b.first.OffsetMS,
 		LastOffsetMS: b.last.OffsetMS, EventCount: b.count, UncompressedBytes: int64(b.buf.Len()),
-		Checksum: sum[:], Codec: Codec, Data: compressed.Bytes(),
+		Checksum: sum[:], Codec: Codec, Data: compressed,
 	}
 	b.buf.Reset()
 	b.count = 0
 	return c, nil
 }
 
+func gzipBytes(plain []byte) ([]byte, error) {
+	var compressed bytes.Buffer
+	w := gzip.NewWriter(&compressed)
+	if _, err := w.Write(plain); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return compressed.Bytes(), nil
+}
+
 // decodeChunk verifies c's checksum, codec, size, and contents, and returns
 // its events. It never returns events from a chunk that fails any check.
 func decodeChunk(c store.RecordingChunk) ([]Event, error) {
+	if err := checkChunkHeader(c); err != nil {
+		return nil, err
+	}
+	plain, err := inflateExact(c)
+	if err != nil {
+		return nil, err
+	}
+	events, err := decodeLines(c, plain)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(events)) != c.EventCount || events[len(events)-1].Seq != c.LastSeq {
+		return nil, corrupt("count")
+	}
+	if events[0].OffsetMS != c.FirstOffsetMS || events[len(events)-1].OffsetMS != c.LastOffsetMS {
+		return nil, corrupt("offset")
+	}
+	return events, nil
+}
+
+// checkChunkHeader verifies the codec, checksum, and declared sizes before
+// anything is decompressed.
+func checkChunkHeader(c store.RecordingChunk) error {
 	if c.Codec != Codec {
-		return nil, corrupt("codec")
+		return corrupt("codec")
 	}
 	sum := sha256.Sum256(c.Data)
 	if subtle.ConstantTimeCompare(sum[:], c.Checksum) != 1 {
-		return nil, corrupt("checksum")
+		return corrupt("checksum")
 	}
 	if c.UncompressedBytes <= 0 || c.UncompressedBytes > maxDecodedChunk || c.EventCount <= 0 {
-		return nil, corrupt("decompress_limit")
+		return corrupt("decompress_limit")
 	}
+	return nil
+}
+
+// inflateExact decompresses c, reading at most one byte past the declared
+// size so a decompression bomb is caught without being expanded.
+func inflateExact(c store.RecordingChunk) ([]byte, error) {
 	r, err := gzip.NewReader(bytes.NewReader(c.Data))
 	if err != nil {
 		return nil, corrupt("decompress")
@@ -263,6 +327,12 @@ func decodeChunk(c store.RecordingChunk) ([]Event, error) {
 	if _, err := io.Copy(io.Discard, io.LimitReader(r, 1)); err != nil {
 		return nil, corrupt("decompress")
 	}
+	return plain, nil
+}
+
+// decodeLines decodes each line of plain, checking sequence and offset
+// order against the chunk's bounds.
+func decodeLines(c store.RecordingChunk, plain []byte) ([]Event, error) {
 	events := make([]Event, 0, c.EventCount)
 	for _, line := range bytes.SplitAfter(plain[:len(plain)-1], []byte("\n")) {
 		e, err := decodeLine(line)
@@ -278,12 +348,6 @@ func decodeChunk(c store.RecordingChunk) ([]Event, error) {
 			return nil, corrupt("offset")
 		}
 		events = append(events, e)
-	}
-	if int64(len(events)) != c.EventCount || events[len(events)-1].Seq != c.LastSeq {
-		return nil, corrupt("count")
-	}
-	if events[0].OffsetMS != c.FirstOffsetMS || events[len(events)-1].OffsetMS != c.LastOffsetMS {
-		return nil, corrupt("offset")
 	}
 	return events, nil
 }

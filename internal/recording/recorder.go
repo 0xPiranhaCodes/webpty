@@ -90,16 +90,18 @@ func (r *recorder) enqueueLocked(e Event, size int) {
 		r.signal()
 		return
 	}
-	ms := r.s.cfg.Now().Sub(r.start).Milliseconds()
-	if ms < r.lastMS {
-		ms = r.lastMS
-	}
-	r.lastMS = ms
 	r.seq++
-	e.Seq, e.OffsetMS = r.seq, ms
+	e.Seq, e.OffsetMS = r.seq, r.nextOffsetLocked()
 	r.queue = append(r.queue, e)
 	r.queueBytes += cost
 	r.signal()
+}
+
+// nextOffsetLocked returns the milliseconds since the recording began,
+// never less than the previous event's so a clock step cannot reorder them.
+func (r *recorder) nextOffsetLocked() int64 {
+	r.lastMS = max(r.lastMS, r.s.cfg.Now().Sub(r.start).Milliseconds())
+	return r.lastMS
 }
 
 func (r *recorder) signal() {
@@ -184,32 +186,30 @@ func (r *recorder) run() {
 			r.finish(CodeShutdownTimeout)
 			return
 		}
-		code := w.addAll(b.events)
-		if code == CodeEncoding || (code == "" && b.failure != "") {
-			// Events accepted before the failure are intact; keep them.
-			if flushed := w.flush(); flushed != "" && code == "" {
-				code = flushed
-			}
-		} else if code == "" && (b.flushDue || b.ended) {
-			code = w.flush()
-		}
-		if code == "" {
-			code = b.failure
-		}
-		switch {
-		case code == codeStopped:
-			r.stopped()
+		if r.settle(&w, b) {
 			return
-		case code != "":
-			r.finish(code)
-			return
-		case b.ended:
-			r.finish("")
-			return
-		case w.b.count > 0:
-			r.armTimer()
 		}
 	}
+}
+
+// settle stores a batch and, if it ends the recording, finishes it and
+// returns true. Otherwise it arms the flush timer for a partial chunk.
+func (r *recorder) settle(w *chunkWriter, b batch) bool {
+	code := w.process(b)
+	switch {
+	case code == codeStopped:
+		r.stopped()
+		return true
+	case code != "":
+		r.finish(code)
+		return true
+	case b.ended:
+		r.finish("")
+		return true
+	case w.b.count > 0:
+		r.armTimer()
+	}
+	return false
 }
 
 // stopAccepting drops anything queued after the writer has exited.
@@ -229,6 +229,24 @@ type chunkWriter struct {
 	stored int64
 }
 
+// process stores a batch and returns the failure code that ends the
+// recording, or "".
+func (w *chunkWriter) process(b batch) string {
+	code := w.addAll(b.events)
+	if code == CodeEncoding || (code == "" && b.failure != "") {
+		// Events accepted before the failure are intact; keep them.
+		if flushed := w.flush(); flushed != "" && code == "" {
+			code = flushed
+		}
+	} else if code == "" && (b.flushDue || b.ended) {
+		code = w.flush()
+	}
+	if code == "" {
+		code = b.failure
+	}
+	return code
+}
+
 // addAll encodes events, storing each chunk once it is full. It returns a
 // failure code, or "".
 func (w *chunkWriter) addAll(events []Event) string {
@@ -239,17 +257,25 @@ func (w *chunkWriter) addAll(events []Event) string {
 			cfg.Logger.Error("encode recording event", "recordingId", w.r.id, "kind", e.Kind, "error", err)
 			return CodeEncoding
 		}
-		if w.b.count > 0 && w.b.len()+len(line) > cfg.ChunkBytes {
-			if code := w.flush(); code != "" {
-				return code
-			}
+		if code := w.add(line, e); code != "" {
+			return code
 		}
-		w.b.add(line, e)
-		if w.b.count >= int64(cfg.ChunkEvents) || w.b.len() >= cfg.ChunkBytes {
-			if code := w.flush(); code != "" {
-				return code
-			}
+	}
+	return ""
+}
+
+// add appends one encoded event, flushing before it if it would overflow
+// the chunk and after it if the chunk is then full.
+func (w *chunkWriter) add(line []byte, e Event) string {
+	cfg := w.r.s.cfg
+	if w.b.count > 0 && w.b.len()+len(line) > cfg.ChunkBytes {
+		if code := w.flush(); code != "" {
+			return code
 		}
+	}
+	w.b.add(line, e)
+	if w.b.count >= int64(cfg.ChunkEvents) || w.b.len() >= cfg.ChunkBytes {
+		return w.flush()
 	}
 	return ""
 }
@@ -268,8 +294,14 @@ func (w *chunkWriter) flush() string {
 	if w.stored+c.UncompressedBytes > cfg.MaxRecordingBytes {
 		return CodeSizeLimit
 	}
+	return w.store(c)
+}
+
+// store appends a sealed chunk and returns a failure code, or "".
+func (w *chunkWriter) store(c store.RecordingChunk) string {
+	cfg := w.r.s.cfg
 	ctx, cancel := context.WithTimeout(w.r.s.ctx, cfg.StoreTimeout)
-	err = cfg.Store.AppendRecordingChunk(ctx, w.r.id, c, cfg.Now())
+	err := cfg.Store.AppendRecordingChunk(ctx, w.r.id, c, cfg.Now())
 	cancel()
 	switch {
 	case err == nil:
@@ -290,25 +322,8 @@ func (w *chunkWriter) flush() string {
 func (r *recorder) finish(code string) {
 	r.stopTimer()
 	s := r.s
-	now := s.cfg.Now()
-	end := store.RecordingEnd{Status: store.RecordingComplete, EndedAt: now, RetainUntil: now.Add(s.cfg.Retention)}
-	eventType := "recording.completed"
-	if code != "" {
-		end.Status, end.FailureCode, eventType = store.RecordingIncomplete, code, "recording.incomplete"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.StoreTimeout)
-	defer cancel()
-	err := s.cfg.Store.WithTx(ctx, func(tx *store.Tx) error {
-		rec, err := tx.FinishRecording(ctx, r.id, end)
-		if err != nil {
-			return err
-		}
-		details := countDetails(rec)
-		if code != "" {
-			details["code"] = code
-		}
-		return s.audit(ctx, tx, eventType, "", details)
-	})
+	end, eventType := r.endState(code)
+	err := r.commitEnd(end, eventType, code)
 	switch {
 	case errors.Is(err, store.ErrRecordingNotActive):
 		r.stopped()
@@ -320,6 +335,35 @@ func (r *recorder) finish(code string) {
 		s.cfg.Logger.Warn("recording incomplete", "recordingId", r.id, "sessionId", r.terminalID, "code", code)
 		s.failed(r, code)
 	}
+}
+
+// endState is the final record state and audit event type for code.
+func (r *recorder) endState(code string) (store.RecordingEnd, string) {
+	now := r.s.cfg.Now()
+	end := store.RecordingEnd{Status: store.RecordingComplete, EndedAt: now, RetainUntil: now.Add(r.s.cfg.Retention)}
+	if code == "" {
+		return end, "recording.completed"
+	}
+	end.Status, end.FailureCode = store.RecordingIncomplete, code
+	return end, "recording.incomplete"
+}
+
+// commitEnd stores end and its audit event, outliving any request context.
+func (r *recorder) commitEnd(end store.RecordingEnd, eventType, code string) error {
+	s := r.s
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.StoreTimeout)
+	defer cancel()
+	return s.cfg.Store.WithTx(ctx, func(tx *store.Tx) error {
+		rec, err := tx.FinishRecording(ctx, r.id, end)
+		if err != nil {
+			return err
+		}
+		details := countDetails(rec)
+		if code != "" {
+			details["code"] = code
+		}
+		return s.audit(ctx, tx, eventType, "", details)
+	})
 }
 
 // stopped reports a recording that was ended elsewhere.
