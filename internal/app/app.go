@@ -168,7 +168,7 @@ func (rt *runtime) router() http.Handler {
 		httpapi.WithTerminals(rt.auth, security, rt.manager, rt.terminalSettings()),
 		httpapi.WithRecordings(rt.auth, security, rt.recordings),
 		httpapi.WithConsole(rt.auth, security, rt.db, runtimeSettings(rt.cfg)),
-		httpapi.WithSPA(webassets.Dist()),
+		httpapi.WithSPA(webassets.Dist(), rt.cfg.SecureCookies),
 	)
 }
 
