@@ -17,6 +17,10 @@ const documentCSP = "default-src 'self'; script-src 'self'; style-src 'self' 'un
 
 const immutableCache = "public, max-age=31536000, immutable"
 
+// hstsMaxAge pins HTTPS for a year once a browser has seen it. Sent only in
+// secure mode, since it must never be emitted over plain HTTP.
+const hstsMaxAge = "max-age=31536000"
+
 var assetTypes = map[string]string{
 	".woff2": "font/woff2",
 	".woff":  "font/woff",
@@ -25,13 +29,16 @@ var assetTypes = map[string]string{
 
 type spa struct {
 	files fs.FS
+	// secure marks HTTPS deployments, which also receive an HSTS header.
+	secure bool
 }
 
 // WithSPA serves the embedded single-page application for /, /admin, and
 // /join. Vite's content-hashed /assets are cached immutably; the HTML shell
 // is revalidated on every load. API routes are more specific and win.
-func WithSPA(files fs.FS) Option {
-	app := &spa{files: files}
+// secureCookies also enables the HSTS response header on document loads.
+func WithSPA(files fs.FS, secureCookies bool) Option {
+	app := &spa{files: files, secure: secureCookies}
 	return func(mux *http.ServeMux) {
 		for _, pattern := range []string{"GET /{$}", "GET /admin", "GET /admin/{path...}", "GET /join"} {
 			mux.HandleFunc(pattern, app.document)
@@ -41,17 +48,20 @@ func WithSPA(files fs.FS) Option {
 	}
 }
 
-func setDocumentHeaders(header http.Header) {
+func setDocumentHeaders(header http.Header, secure bool) {
 	header.Set("Content-Security-Policy", documentCSP)
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Referrer-Policy", "no-referrer")
 	header.Set("X-Frame-Options", "DENY")
 	header.Set("Cross-Origin-Opener-Policy", "same-origin")
 	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+	if secure {
+		header.Set("Strict-Transport-Security", hstsMaxAge)
+	}
 }
 
 func (s *spa) document(w http.ResponseWriter, r *http.Request) {
-	setDocumentHeaders(w.Header())
+	setDocumentHeaders(w.Header(), s.secure)
 	index, err := fs.ReadFile(s.files, "index.html")
 	if errors.Is(err, fs.ErrNotExist) {
 		w.Header().Set("Cache-Control", "no-store")

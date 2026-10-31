@@ -56,10 +56,26 @@ func assertDocumentSecurityHeaders(t *testing.T, path string, header http.Header
 	if header.Get("Permissions-Policy") == "" {
 		t.Errorf("%s: no Permissions-Policy", path)
 	}
+	// These handlers are built in plain (non-secure) mode: HSTS must never
+	// be sent over plain HTTP.
+	if got := header.Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("%s: unexpected HSTS %q in plain mode", path, got)
+	}
+}
+
+func TestSPASendsHSTSOnlyWithSecureCookies(t *testing.T) {
+	secure := httpapi.NewRouter(httpapi.WithSPA(spaFS(), true))
+	if got := serveSPA(t, secure, http.MethodGet, "/").Header().Get("Strict-Transport-Security"); got != "max-age=31536000" {
+		t.Errorf("secure HSTS = %q, want max-age=31536000", got)
+	}
+	plain := httpapi.NewRouter(httpapi.WithSPA(spaFS(), false))
+	if got := serveSPA(t, plain, http.MethodGet, "/").Header().Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("plain HSTS = %q, want none", got)
+	}
 }
 
 func TestSPAServesIndexForAppRoutesWithoutCaching(t *testing.T) {
-	handler := httpapi.NewRouter(httpapi.WithSPA(spaFS()))
+	handler := httpapi.NewRouter(httpapi.WithSPA(spaFS(), false))
 	for _, path := range []string{"/", "/admin", "/admin/", "/admin/sessions/abc", "/admin/recordings/r1", "/join"} {
 		response := serveSPA(t, handler, http.MethodGet, path)
 		if response.Code != http.StatusOK {
@@ -79,7 +95,7 @@ func TestSPAServesIndexForAppRoutesWithoutCaching(t *testing.T) {
 }
 
 func TestSPAServesHashedAssetsImmutably(t *testing.T) {
-	handler := httpapi.NewRouter(httpapi.WithSPA(spaFS()))
+	handler := httpapi.NewRouter(httpapi.WithSPA(spaFS(), false))
 	for path, body := range map[string]string{"/assets/index-abc123.js": `console.log("app")`, "/assets/fonts/plex.woff2": "wOF2"} {
 		response := serveSPA(t, handler, http.MethodGet, path)
 		if response.Code != http.StatusOK || response.Body.String() != body {
@@ -102,7 +118,7 @@ func TestSPAServesHashedAssetsImmutably(t *testing.T) {
 }
 
 func TestSPARejectsMissingAssetsAndDirectoryListings(t *testing.T) {
-	handler := httpapi.NewRouter(httpapi.WithSPA(spaFS()))
+	handler := httpapi.NewRouter(httpapi.WithSPA(spaFS(), false))
 	for _, path := range []string{"/assets/missing.js", "/assets/", "/assets/fonts/", "/assets/../index.html", "/unknown", "/admin.html"} {
 		response := serveSPA(t, handler, http.MethodGet, path)
 		if response.Code == http.StatusOK {
@@ -122,7 +138,7 @@ func TestSPARejectsMissingAssetsAndDirectoryListings(t *testing.T) {
 
 func TestSPADoesNotShadowAPIRoutes(t *testing.T) {
 	h := newAPIWith(t, httpapi.SecuritySettings{}, func(*auth.Service, *store.Store) []httpapi.Option {
-		return []httpapi.Option{httpapi.WithSPA(spaFS())}
+		return []httpapi.Option{httpapi.WithSPA(spaFS(), false)}
 	})
 	if response := h.do(request{method: http.MethodGet, path: "/healthz"}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ok"`) {
 		t.Errorf("healthz = %d %q", response.Code, response.Body.String())
@@ -139,7 +155,7 @@ func TestSPADoesNotShadowAPIRoutes(t *testing.T) {
 }
 
 func TestSPAWithoutBuiltIndexExplainsHowToBuild(t *testing.T) {
-	handler := httpapi.NewRouter(httpapi.WithSPA(fstest.MapFS{".gitkeep": {}}))
+	handler := httpapi.NewRouter(httpapi.WithSPA(fstest.MapFS{".gitkeep": {}}, false))
 	response := serveSPA(t, handler, http.MethodGet, "/admin")
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "go generate ./internal/webassets") {
 		t.Fatalf("status = %d body = %q", response.Code, response.Body.String())

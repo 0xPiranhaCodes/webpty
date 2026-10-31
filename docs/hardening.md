@@ -28,6 +28,13 @@ asks for a refused command, the API answers `403` with code
 `command_denied`, and the audit log records `terminal.session.denied` with
 the command and `reason=command_policy`.
 
+The policy restricts which executable a terminal **launches**, not what that
+program then does. Allowing a shell such as `/bin/bash` lets whoever uses the
+terminal run anything from inside it, so the policy is a guardrail against
+launching specific binaries, not a sandbox. Real confinement comes from the
+operating system: run webpty as a dedicated low-privilege account and add
+service hardening (see [deployment.md](deployment.md)).
+
 ## What terminals inherit from the server
 
 A terminal does not inherit webpty's environment. It receives only:
@@ -75,6 +82,24 @@ ends, including one with the right password. `Retry-After` gives the seconds
 left in the window, rounded up. The first refusal in each window is recorded
 in the audit log (`admin.login.throttled`, `admin.password.throttled` or
 `access.redeem.throttled`).
+
+## What recordings capture
+
+Recording is on by default. Terminal *output* — everything shown on screen —
+is stored in the database (gzip-compressed) and kept for
+`WEBPTY_RECORDING_RETENTION` (30 days by default). Keystrokes are never
+recorded, but output includes whatever a program prints, so a secret shown on
+screen (a `cat` of a credentials file, a token echoed back by a command) is
+retained in the database and in any backup of it.
+
+To limit this exposure:
+
+- Protect the database file. It should be mode `600` in a `700` directory;
+  `webpty doctor` warns when other users can read it.
+- Shorten `WEBPTY_RECORDING_RETENTION` if you do not need the history, or set
+  `WEBPTY_RECORDING_ENABLED=false` to stop recording new terminals by default.
+- Opt an individual terminal out of recording when it will show secrets (the
+  create API's `record: false`).
 
 ## Listening beyond this machine
 

@@ -36,9 +36,12 @@ The proxy must:
 - keep the `Origin` header (webpty rejects cross-origin requests);
 - allow long-lived connections: terminals stay open for hours.
 
-webpty does not trust `X-Forwarded-For`. Sign-in rate limits and audit
-entries therefore see the proxy's address, so all clients share one limit.
-Rate-limit sign-in at the proxy as well if many people use one instance.
+webpty does not trust `X-Forwarded-For`, which a client can forge. Sign-in
+rate limits and audit entries therefore see the proxy's address: all clients
+share one sign-in limit, so one abusive client can briefly lock everyone out,
+and audit entries record the proxy rather than the real client. Rate-limit
+sign-in at the proxy as well, and log the client address there, if many
+people use one instance.
 
 ### Caddy
 

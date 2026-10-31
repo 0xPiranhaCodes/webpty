@@ -162,7 +162,7 @@ every loosening is explicit.
 | Capabilities stored as hashes | A share link's secret is displayed once; the database keeps only its hash, scope, expiry, and revocation state. |
 | Server-side authorization everywhere | Every API request and WebSocket message is checked on the server. Viewers cannot type, and revocation ends live connections. |
 | Same-origin and CSRF checks | Cross-origin requests are rejected, and state-changing requests need a CSRF token. Cookies are `Secure` automatically for an `https` origin. |
-| Recordings never contain input | Output, resizes, lifecycle, and presence are recorded; keystrokes are not, and never reach logs or audit details either. |
+| Recordings never contain input | Keystrokes are never recorded and never reach logs or audit details. Screen *output* is recorded and stored in the database, so secrets printed on screen are retained there — protect the database file and see [hardening.md](docs/hardening.md). |
 
 Found a vulnerability? Please report it privately as described in
 [SECURITY.md](SECURITY.md).
